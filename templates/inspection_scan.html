@@ -16,11 +16,35 @@
   </div>
   {% if result %}<div class="scan-result {{ result.result }}"><strong>{{ result.result }}</strong><span>{{ result.message }}</span><small>掃描時間：{{ format_datetime(result.scanned_at) }}</small><small>掃描內容：<code>{{ result.payload }}</code></small></div>{% endif %}
 </section>
+{% if pending_finish_order %}
+<dialog id="finish-results-dialog" class="finish-results-dialog" aria-labelledby="finish-results-title">
+  <form method="post" action="{{ url_for('main.scan_finish_results') }}" class="form-wide">
+    <h2 id="finish-results-title">填寫校機測試數值</h2>
+    <p class="muted">訂單：{{ pending_finish_order.order_no }}　／　製號：{{ pending_finish_order.machine_serial }}。標示「必填」的欄位完成後，才會正式結束校機。</p>
+    {% if pending_finish_order.axis_type_snapshot == '5' %}
+    <div class="finish-axis-groups">
+      <fieldset class="finish-axis-group"><legend>傾斜軸</legend><div class="grid two"><label>原點（選填）<input name="tilt_origin_value" maxlength="80" inputmode="decimal" autocomplete="off"></label><label>背隙補正值（必填）<input name="tilt_backlash_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label><label>電流值（必填）<span class="current-range-inputs"><input name="tilt_current_min_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="下限，例如 36" required><span class="current-range-separator" aria-hidden="true">－</span><input name="tilt_current_max_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="上限，例如 38" required></span></label><label>柵格量（必填）<input name="tilt_grid_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label><div class="finish-axis-full finish-motor-display"><span>馬達型號</span><strong>{{ pending_finish_order.tilt_motor_spec_snapshot or pending_finish_order.motor_spec_snapshot or '未設定' }}</strong></div></div></fieldset>
+      <fieldset class="finish-axis-group"><legend>旋轉軸</legend><div class="grid two"><label>原點（選填）<input name="rotary_origin_value" maxlength="80" inputmode="decimal" autocomplete="off"></label><label>背隙補正值（必填）<input name="rotary_backlash_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label><label>電流值（必填）<span class="current-range-inputs"><input name="rotary_current_min_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="下限，例如 36" required><span class="current-range-separator" aria-hidden="true">－</span><input name="rotary_current_max_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="上限，例如 38" required></span></label><label>柵格量（必填）<input name="rotary_grid_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label><div class="finish-axis-full finish-motor-display"><span>馬達型號</span><strong>{{ pending_finish_order.rotary_motor_spec_snapshot or pending_finish_order.motor_spec_snapshot or '未設定' }}</strong></div></div></fieldset>
+    </div>
+    {% else %}
+    <div class="grid two">
+      <label>原點（選填）<input name="origin_value" maxlength="80" inputmode="decimal" autocomplete="off"></label>
+      <label>背隙補正值（必填）<input name="backlash_correction_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label>
+      <label>電流值（必填）<span class="current-range-inputs"><input name="current_min_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="下限，例如 36" required><span class="current-range-separator" aria-hidden="true">－</span><input name="current_max_value" maxlength="80" inputmode="decimal" autocomplete="off" placeholder="上限，例如 38" required></span></label>
+      <label>柵格量（必填）<input name="grid_value" maxlength="80" inputmode="decimal" autocomplete="off" required></label>
+<div class="finish-axis-full finish-motor-display"><span>馬達型號</span><strong>{{ pending_finish_order.motor_spec_snapshot or '未設定' }}</strong></div>
+    </div>
+    {% endif %}
+    <p class="muted">原點有填值時，系統會記錄此機台的馬達由本公司安裝。馬達型號已由建立訂單時的資料帶入。</p>
+    <div class="finish-results-actions"><button class="button primary" type="submit">確認完成校機</button><button class="button" type="submit" formmethod="post" formaction="{{ url_for('main.scan_reset') }}" formnovalidate>取消，返回掃描</button></div>
+  </form>
+</dialog>
+{% endif %}
 <section class="panel scan-guide" aria-labelledby="scan-guide-title">
   <h2 id="scan-guide-title">掃描操作說明</h2>
   <div class="scan-guide-grid">
     <article><strong>1. 開始校機</strong><span>員工條碼 → 訂單 START</span></article>
-    <article><strong>2. 完成校機</strong><span>原認領員工條碼 → 訂單 FINISH</span></article>
+    <article><strong>2. 完成校機</strong><span>原認領員工條碼 → 訂單 FINISH → 填寫測試數值與馬達規格</span></article>
     <article><strong>3. 機台缺料</strong><span>原認領員工條碼 → 固定缺料條碼 → 該訂單 START</span></article>
     <article><strong>4. 料件補齊</strong><span>原認領員工條碼 → 固定補料條碼 → 該訂單 START</span></article>
     <article><strong>5. 人工暫停</strong><span>暫停：原認領員工條碼 → 固定暫停條碼 → 該訂單 START；恢復：原認領員工條碼 → 該訂單 START</span></article>

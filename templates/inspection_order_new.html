@@ -1,13 +1,12 @@
 {% extends 'base.html' %}
+{% macro motor_fields(prefix='', title='') %}
+<div class="axis-motor-card" data-motor-selector>{% if title %}<h3>{{ title }}</h3>{% endif %}<div class="grid two"><label>馬達品牌（可選）<select name="{{ prefix }}motor_brand" class="motor-brand"><option value="">不選擇</option>{% for group in motor_specs|groupby('brand') %}{% if group.grouper %}<option value="{{ group.grouper }}">{{ group.grouper }}</option>{% endif %}{% endfor %}</select></label><label>馬達型號（可選）<select name="{{ prefix }}motor_spec" class="motor-spec" disabled><option value="">不選擇</option></select></label></div><input type="hidden" name="{{ prefix }}new_motor_enabled" class="new-motor-enabled" value="0"><button type="button" class="text-button add-motor-button">＋ 找不到馬達？新增品牌／型號</button><div class="grid two new-motor-fields" hidden><label>新增馬達品牌（可選）<input name="{{ prefix }}new_motor_brand" class="new-motor-brand" maxlength="80" disabled></label><label>新增馬達型號（可選）<input name="{{ prefix }}new_motor_spec" class="new-motor-spec" maxlength="120" disabled></label><button type="button" class="text-button new-motor-cancel">取消新增，改用既有馬達</button></div></div>
+{% endmacro %}
 {% block content %}
 <h1>建立訂單</h1>
-<form method="post" id="inspection-order-form" class="panel form-wide">
-  <p class="muted">建立時不指定校機人員；員工會在掃描 START 時認領訂單。</p>
-  <div class="grid two"><label>訂單號碼<input name="order_no" required maxlength="80"></label><label>機台製號<input name="machine_serial" required maxlength="80"></label></div>
-  <label>機型<input name="model_name" required maxlength="100" placeholder="例如 HR-255"></label>
-  <p class="muted">系統自動判斷：機型 F／M 開頭，或機台製號 S 開頭，判定為五軸；其他判定為四軸。</p>
-  <div class="grid two"><label>客戶名稱（可選）<input name="customer_name"></label><label>預計出貨日期（可選）<input type="date" name="expected_ship_date"></label></div>
-  <label>重新檢驗/改單原因（可選）<textarea name="reinspection_reason"></textarea></label>
-  <button class="button primary">建立訂單並產生條碼</button>
-</form>
+{% if not axis_type %}
+<section class="panel axis-entry"><h2>選擇機台軸別</h2><p class="muted">請先選擇要建立的訂單類型。</p><div class="axis-choice-cards"><a class="axis-choice-card" href="{{ url_for('main.orders_new', axis_type='4') }}"><strong>四軸機台</strong><span>填寫一組馬達品牌與型號</span></a><a class="axis-choice-card" href="{{ url_for('main.orders_new', axis_type='5') }}"><strong>五軸機台</strong><span>分別填寫旋轉軸與傾斜軸馬達</span></a></div></section>
+{% else %}
+<form method="post" id="inspection-order-form" class="panel form-wide"><p class="muted">建立時不指定校機人員；員工會在掃描 START 時認領訂單。</p><div class="grid three"><label>訂單號碼<input name="order_no" required maxlength="80"></label><label>客戶名稱（可選）<input name="customer_name"></label><label>預計出貨日期（可選）<input type="date" name="expected_ship_date"></label></div><div class="grid two"><label>機型<input name="model_name" required maxlength="100" placeholder="例如 HR-255"></label><label>機台製號<input name="machine_serial" required maxlength="80"></label></div><input type="hidden" name="axis_type" value="{{ axis_type }}"><p class="muted">已選擇：{{ '四軸機台' if axis_type == '4' else '五軸機台' }}　<a href="{{ url_for('main.orders_new') }}">重新選擇</a></p>{% if axis_type == '4' %}{{ motor_fields() }}{% else %}{{ motor_fields('rotary_', '旋轉軸馬達') }}{{ motor_fields('tilt_', '傾斜軸馬達') }}{% endif %}<button class="button primary">建立訂單並產生條碼</button></form><script id="motor-spec-catalog" type="application/json">{{ motor_specs|tojson }}</script>
+{% endif %}
 {% endblock %}

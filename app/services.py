@@ -4,6 +4,7 @@ import re
 import shutil
 import sqlite3
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -1082,6 +1083,24 @@ def _inspection_text(value, field, required=True):
     return value
 
 
+def _inspection_decimal(value, field):
+    value = _inspection_text(value, field)
+    try:
+        Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field}必須是數字") from exc
+    return value
+
+
+def _inspection_current_range(minimum, maximum, axis_label=""):
+    label_prefix = f"{axis_label}" if axis_label else ""
+    minimum = _inspection_decimal(minimum, f"{label_prefix}電流下限")
+    maximum = _inspection_decimal(maximum, f"{label_prefix}電流上限")
+    if Decimal(minimum) > Decimal(maximum):
+        raise ValueError(f"{label_prefix}電流下限不能大於電流上限")
+    return minimum, maximum
+
+
 def _inspection_code(value, field):
     value = _inspection_text(value, field)
     if any(ord(ch) > 127 for ch in value):
@@ -1399,12 +1418,19 @@ def delete_packing_worker(worker_id, expected_employee_no, confirmation, backup_
     return backup
 
 
-def create_order(order_no, model_id=None, machine_serial=None, customer_name="", expected_ship_date="", reinspection_reason="", created_by="admin", model_name=None, axis_type="4"):
+def create_order(order_no, model_id=None, machine_serial=None, customer_name="", expected_ship_date="", reinspection_reason="", motor_brand="", motor_spec_snapshot="", rotary_motor_brand="", rotary_motor_spec_snapshot="", tilt_motor_brand="", tilt_motor_spec_snapshot="", created_by="admin", model_name=None, axis_type=None):
     order_no = _inspection_code(order_no, "訂單號碼")
     machine_serial = _inspection_code(machine_serial, "機台製號")
     customer_name = _inspection_text(customer_name, "客戶名稱", required=False)
     reinspection_reason = _inspection_text(reinspection_reason, "重新檢驗原因", required=False)
-    del axis_type
+    motor_brand = _inspection_text(motor_brand, "馬達品牌", required=False)
+    motor_spec_snapshot = _inspection_text(motor_spec_snapshot, "馬達型號", required=False)
+    rotary_motor_brand = _inspection_text(rotary_motor_brand, "旋轉軸馬達品牌", required=False)
+    rotary_motor_spec_snapshot = _inspection_text(rotary_motor_spec_snapshot, "旋轉軸馬達型號", required=False)
+    tilt_motor_brand = _inspection_text(tilt_motor_brand, "傾斜軸馬達品牌", required=False)
+    tilt_motor_spec_snapshot = _inspection_text(tilt_motor_spec_snapshot, "傾斜軸馬達型號", required=False)
+    if axis_type is not None and axis_type not in {"4", "5"}:
+        raise ValueError("請選擇四軸或五軸")
     expected_ship_date = (expected_ship_date or "").strip() or None
     if expected_ship_date:
         try:
@@ -1431,14 +1457,15 @@ def create_order(order_no, model_id=None, machine_serial=None, customer_name="",
             model = db.execute("SELECT * FROM inspection_model_master WHERE id=?", (model_id,)).fetchone()
             _inspection_audit("create", "model_master", model_id, {"model_name": model_name, "model_code": model_code, "source": "order"}, created_by)
     now = utc_now()
-    order_axis_type = _infer_inspection_axis_type(model["model_name"], machine_serial)
+    order_axis_type = axis_type or _infer_inspection_axis_type(model["model_name"], machine_serial)
     try:
-        cur = db.execute("INSERT INTO inspection_order(order_no,model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (order_no, model_id, model["model_name"], model["model_code"], order_axis_type, machine_serial, customer_name, expected_ship_date, reinspection_reason, now, now))
+        cur = db.execute("INSERT INTO inspection_order(order_no,model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (order_no, model_id, model["model_name"], model["model_code"], order_axis_type, machine_serial, customer_name, expected_ship_date, reinspection_reason, motor_brand, motor_spec_snapshot, rotary_motor_brand, rotary_motor_spec_snapshot, tilt_motor_brand, tilt_motor_spec_snapshot, now, now))
     except sqlite3.IntegrityError as exc:
         if "inspection_order.order_no" in str(exc):
             raise ValueError("訂單號碼已存在") from exc
         raise ValueError(f"訂單資料無法建立：{exc}") from exc
     order_id = cur.lastrowid
+    remember_inspection_motor_specs((motor_brand, motor_spec_snapshot), (rotary_motor_brand, rotary_motor_spec_snapshot), (tilt_motor_brand, tilt_motor_spec_snapshot))
     _inspection_audit("create", "inspection_order", order_id, {"order_no": order_no, "machine_serial": machine_serial}, created_by)
     db.commit()
     ensure_order_barcodes(order_id)
@@ -1504,12 +1531,17 @@ def correct_order_details(
     operator_name,
     password,
     backup_dir,
+    motor_brand=None,
+    motor_spec_snapshot=None,
+    rotary_motor_brand=None,
+    rotary_motor_spec_snapshot=None,
+    tilt_motor_brand=None,
+    tilt_motor_spec_snapshot=None,
 ):
     """Correct current order data while retaining an auditable before/after record."""
     reason, operator_name = _require_admin_correction(password, reason, operator_name)
     machine_serial = _inspection_code(machine_serial, "機台製號")
     customer_name = _inspection_text(customer_name, "客戶名稱", required=False)
-    reinspection_reason = _inspection_text(reinspection_reason, "重新檢驗原因", required=False)
     raw_date = (expected_ship_date or "").strip()
     expected_ship_date = raw_date or None
     if expected_ship_date:
@@ -1528,6 +1560,13 @@ def correct_order_details(
         raise ValueError("找不到訂單")
     if order["status"] == "cancelled":
         raise ValueError("已取消訂單不能修改基本資料")
+    reinspection_reason = order["reinspection_reason"] if reinspection_reason is None else _inspection_text(reinspection_reason, "重新檢驗原因", required=False)
+    motor_brand = order["motor_brand"] if motor_brand is None else _inspection_text(motor_brand, "馬達品牌", required=False)
+    motor_spec_snapshot = order["motor_spec_snapshot"] if motor_spec_snapshot is None else _inspection_text(motor_spec_snapshot, "馬達型號", required=False)
+    rotary_motor_brand = order["rotary_motor_brand"] if rotary_motor_brand is None else _inspection_text(rotary_motor_brand, "旋轉軸馬達品牌", required=False)
+    rotary_motor_spec_snapshot = order["rotary_motor_spec_snapshot"] if rotary_motor_spec_snapshot is None else _inspection_text(rotary_motor_spec_snapshot, "旋轉軸馬達型號", required=False)
+    tilt_motor_brand = order["tilt_motor_brand"] if tilt_motor_brand is None else _inspection_text(tilt_motor_brand, "傾斜軸馬達品牌", required=False)
+    tilt_motor_spec_snapshot = order["tilt_motor_spec_snapshot"] if tilt_motor_spec_snapshot is None else _inspection_text(tilt_motor_spec_snapshot, "傾斜軸馬達型號", required=False)
     model = db.execute(
         "SELECT * FROM inspection_model_master WHERE id=? AND is_active=1", (model_id,)
     ).fetchone()
@@ -1543,6 +1582,12 @@ def correct_order_details(
         "customer_name",
         "expected_ship_date",
         "reinspection_reason",
+        "motor_brand",
+        "motor_spec_snapshot",
+        "rotary_motor_brand",
+        "rotary_motor_spec_snapshot",
+        "tilt_motor_brand",
+        "tilt_motor_spec_snapshot",
     )
     old_values = {field: order[field] for field in fields}
     new_values = {
@@ -1554,6 +1599,12 @@ def correct_order_details(
         "customer_name": customer_name,
         "expected_ship_date": expected_ship_date,
         "reinspection_reason": reinspection_reason,
+        "motor_brand": motor_brand,
+        "motor_spec_snapshot": motor_spec_snapshot,
+        "rotary_motor_brand": rotary_motor_brand,
+        "rotary_motor_spec_snapshot": rotary_motor_spec_snapshot,
+        "tilt_motor_brand": tilt_motor_brand,
+        "tilt_motor_spec_snapshot": tilt_motor_spec_snapshot,
     }
     if old_values == new_values:
         raise ValueError("訂單基本資料沒有變更")
@@ -1562,7 +1613,7 @@ def correct_order_details(
     try:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute(
-            "SELECT model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,status FROM inspection_order WHERE id=?",
+            "SELECT model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,status FROM inspection_order WHERE id=?",
             (order_id,),
         ).fetchone()
         if not current or current["status"] == "cancelled":
@@ -1573,13 +1624,15 @@ def correct_order_details(
             """
             UPDATE inspection_order
             SET model_id=?,model_name_snapshot=?,model_code_snapshot=?,axis_type_snapshot=?,
-                machine_serial=?,customer_name=?,expected_ship_date=?,reinspection_reason=?,updated_at=?
+                machine_serial=?,customer_name=?,expected_ship_date=?,reinspection_reason=?,motor_brand=?,motor_spec_snapshot=?,
+                rotary_motor_brand=?,rotary_motor_spec_snapshot=?,tilt_motor_brand=?,tilt_motor_spec_snapshot=?,updated_at=?
             WHERE id=?
             """,
             (
                 new_values["model_id"], new_values["model_name_snapshot"], new_values["model_code_snapshot"],
                 new_values["axis_type_snapshot"], new_values["machine_serial"], new_values["customer_name"],
-                new_values["expected_ship_date"], new_values["reinspection_reason"], utc_now(), order_id,
+                new_values["expected_ship_date"], new_values["reinspection_reason"], new_values["motor_brand"], new_values["motor_spec_snapshot"],
+                new_values["rotary_motor_brand"], new_values["rotary_motor_spec_snapshot"], new_values["tilt_motor_brand"], new_values["tilt_motor_spec_snapshot"], utc_now(), order_id,
             ),
         )
         _inspection_audit(
@@ -1594,6 +1647,11 @@ def correct_order_details(
                 "backup": str(backup),
             },
             operator_name,
+        )
+        remember_inspection_motor_specs(
+            (motor_brand, motor_spec_snapshot),
+            (rotary_motor_brand, rotary_motor_spec_snapshot),
+            (tilt_motor_brand, tilt_motor_spec_snapshot),
         )
         db.commit()
     except Exception:
@@ -1931,6 +1989,173 @@ def _resume_manual_pause(db, order, current_worker, scanned_at):
     return "success", f"恢復成功：{order['order_no']} 已繼續計算實際工時"
 
 
+def complete_inspection_finish_with_test_results(
+    order_id,
+    worker_id,
+    scanned_at,
+    scan_event_id,
+    origin_value,
+    backlash_correction_value,
+    current_min_value,
+    current_max_value,
+    grid_value,
+    motor_spec=None,
+    rotary_motor_spec=None,
+    tilt_motor_spec=None,
+    rotary_origin_value=None,
+    tilt_origin_value=None,
+    rotary_backlash_value=None,
+    tilt_backlash_value=None,
+    rotary_current_min_value=None,
+    rotary_current_max_value=None,
+    tilt_current_min_value=None,
+    tilt_current_max_value=None,
+    rotary_grid_value=None,
+    tilt_grid_value=None,
+):
+    """Complete a scanned FINISH only after its required inspection results are recorded."""
+    order = get_order(order_id)
+    if not order:
+        raise ValueError("訂單狀態已變更，請重新掃描 FINISH")
+    if str(order["axis_type_snapshot"] or "4") == "5":
+        rotary_current_min_value, rotary_current_max_value = _inspection_current_range(
+            rotary_current_min_value, rotary_current_max_value, "旋轉軸"
+        )
+        tilt_current_min_value, tilt_current_max_value = _inspection_current_range(
+            tilt_current_min_value, tilt_current_max_value, "傾斜軸"
+        )
+        rotary_origin_value = _inspection_text(rotary_origin_value, "旋轉軸原點", required=False)
+        tilt_origin_value = _inspection_text(tilt_origin_value, "傾斜軸原點", required=False)
+        results = {
+            "test_origin_value": "", "test_backlash_value": "", "test_current_value": "",
+            "test_current_min_value": "", "test_current_max_value": "", "test_grid_value": "", "test_motor_spec": "",
+            "test_rotary_origin_value": rotary_origin_value,
+            "test_tilt_origin_value": tilt_origin_value,
+            "test_rotary_backlash_value": _inspection_text(rotary_backlash_value, "旋轉軸背隙補正值"),
+            "test_tilt_backlash_value": _inspection_text(tilt_backlash_value, "傾斜軸背隙補正值"),
+            "test_rotary_current_min_value": rotary_current_min_value,
+            "test_rotary_current_max_value": rotary_current_max_value,
+            "test_tilt_current_min_value": tilt_current_min_value,
+            "test_tilt_current_max_value": tilt_current_max_value,
+            "test_rotary_grid_value": _inspection_text(rotary_grid_value, "旋轉軸柵格量"),
+            "test_tilt_grid_value": _inspection_text(tilt_grid_value, "傾斜軸柵格量"),
+            "test_rotary_motor_spec": _inspection_text(rotary_motor_spec or order["rotary_motor_spec_snapshot"] or order["motor_spec_snapshot"], "旋轉軸馬達規格", required=False),
+            "test_tilt_motor_spec": _inspection_text(tilt_motor_spec or order["tilt_motor_spec_snapshot"] or order["motor_spec_snapshot"], "傾斜軸馬達規格", required=False),
+            "motor_installed_by_us": False,
+            "rotary_motor_installed_by_us": bool(rotary_origin_value),
+            "tilt_motor_installed_by_us": bool(tilt_origin_value),
+        }
+    else:
+        current_min_value, current_max_value = _inspection_current_range(current_min_value, current_max_value)
+        origin_value = _inspection_text(origin_value, "原點", required=False)
+        results = {
+            "test_origin_value": origin_value,
+            "test_backlash_value": _inspection_text(backlash_correction_value, "背隙補正值"),
+            "test_current_value": f"{current_min_value} - {current_max_value}",
+            "test_current_min_value": current_min_value,
+            "test_current_max_value": current_max_value,
+            "test_grid_value": _inspection_text(grid_value, "柵格量"),
+            "test_motor_spec": _inspection_text(motor_spec or order["motor_spec_snapshot"], "馬達規格", required=False),
+            "test_rotary_origin_value": "", "test_tilt_origin_value": "",
+            "test_rotary_backlash_value": "", "test_tilt_backlash_value": "",
+            "test_rotary_current_min_value": "", "test_rotary_current_max_value": "",
+            "test_tilt_current_min_value": "", "test_tilt_current_max_value": "",
+            "test_rotary_grid_value": "", "test_tilt_grid_value": "",
+            "test_rotary_motor_spec": "", "test_tilt_motor_spec": "",
+            "motor_installed_by_us": bool(origin_value),
+            "rotary_motor_installed_by_us": False,
+            "tilt_motor_installed_by_us": False,
+        }
+    db = get_db()
+    current_worker = _active_worker(worker_id)
+    if not current_worker:
+        raise ValueError("請重新掃描有效且啟用中的員工條碼")
+    if not order or order["status"] != "started":
+        raise ValueError("訂單狀態已變更，請重新掃描 FINISH")
+    if order["worker_id"] != current_worker["id"]:
+        raise ValueError("只有原認領人員可以完成此訂單")
+    if _active_material_pause(db, order_id):
+        raise ValueError("此訂單目前為缺料暫停中，請先完成補料掃描")
+    if _active_manual_pause(db, order_id):
+        raise ValueError("此訂單目前為人工暫停中，請先恢復校機")
+    try:
+        starts_after_finish = order["started_at"] and datetime.fromisoformat(scanned_at) < datetime.fromisoformat(order["started_at"])
+    except (TypeError, ValueError):
+        starts_after_finish = False
+    if starts_after_finish:
+        raise ValueError("FINISH 時間不能早於 START 時間")
+
+    updated = db.execute(
+        """
+        UPDATE inspection_order
+        SET status='completed',finished_at=?,updated_at=?,
+            test_origin_value=?,test_backlash_value=?,test_current_value=?,
+            test_current_min_value=?,test_current_max_value=?,test_grid_value=?,test_motor_spec=?,
+            test_rotary_motor_spec=?,test_tilt_motor_spec=?,
+            test_rotary_origin_value=?,test_tilt_origin_value=?,test_rotary_backlash_value=?,test_tilt_backlash_value=?,
+            test_rotary_current_min_value=?,test_rotary_current_max_value=?,test_tilt_current_min_value=?,test_tilt_current_max_value=?,
+            test_rotary_grid_value=?,test_tilt_grid_value=?,
+            motor_installed_by_us=?,rotary_motor_installed_by_us=?,tilt_motor_installed_by_us=?
+        WHERE id=? AND status='started'
+        """,
+        (
+            scanned_at, scanned_at,
+            results["test_origin_value"], results["test_backlash_value"], results["test_current_value"],
+            results["test_current_min_value"], results["test_current_max_value"], results["test_grid_value"], results["test_motor_spec"],
+            results["test_rotary_motor_spec"], results["test_tilt_motor_spec"],
+            results["test_rotary_origin_value"], results["test_tilt_origin_value"], results["test_rotary_backlash_value"], results["test_tilt_backlash_value"],
+            results["test_rotary_current_min_value"], results["test_rotary_current_max_value"], results["test_tilt_current_min_value"], results["test_tilt_current_max_value"],
+            results["test_rotary_grid_value"], results["test_tilt_grid_value"],
+            int(results["motor_installed_by_us"]), int(results["rotary_motor_installed_by_us"]), int(results["tilt_motor_installed_by_us"]),
+            order_id,
+        ),
+    ).rowcount
+    if not updated:
+        raise ValueError("訂單狀態已變更，請重新掃描 FINISH")
+    remember_inspection_motor_specs(
+        results["test_motor_spec"], results["test_rotary_motor_spec"], results["test_tilt_motor_spec"]
+    )
+    message = f"FINISH 成功：{order['order_no']}"
+    db.execute(
+        "UPDATE inspection_scan_event SET result='success',message=? WHERE event_id=? AND result='pending'",
+        (message, scan_event_id),
+    )
+    _inspection_audit(
+        "finish",
+        "inspection_order",
+        order_id,
+        {"order_no": order["order_no"], "employee_no": current_worker["employee_no"], "test_results": results},
+        current_worker["name"],
+    )
+    db.commit()
+    return message
+
+
+def list_inspection_motor_specs():
+    """Return selectable motor specifications, including previously added onsite entries."""
+    return [dict(row) for row in get_db().execute(
+        "SELECT brand,spec FROM inspection_motor_spec WHERE is_active=1 ORDER BY brand COLLATE NOCASE,spec COLLATE NOCASE"
+    ).fetchall()]
+
+
+def remember_inspection_motor_specs(*specs):
+    """Persist valid, manually entered motor specs so they are offered on later FINISH forms."""
+    values = {}
+    for entry in specs:
+        brand, spec = entry if isinstance(entry, tuple) else ("", entry)
+        brand, spec = (brand or "").strip(), (spec or "").strip()
+        if spec:
+            values[spec.casefold()] = (brand, spec)
+    if not values:
+        return
+    now = utc_now()
+    get_db().executemany(
+        "INSERT INTO inspection_motor_spec(brand,spec,is_active,created_at,updated_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(spec) DO UPDATE SET brand=CASE WHEN excluded.brand<>'' THEN excluded.brand ELSE inspection_motor_spec.brand END,is_active=1,updated_at=excluded.updated_at",
+        [(brand, spec, 1, now, now) for brand, spec in values.values()],
+    )
+
+
 def scan(payload, worker_id=None, operator_name="scanner", pending_material_action=None, pending_pause_action=None):
     del operator_name
     db = get_db()
@@ -2077,16 +2302,12 @@ def scan(payload, worker_id=None, operator_name="scanner", pending_material_acti
         if starts_after_finish:
             message = "FINISH 時間不能早於 START 時間"
         else:
-            updated = db.execute("UPDATE inspection_order SET status='completed',finished_at=?,updated_at=? WHERE id=? AND status='started'", (scanned_at, scanned_at, order["id"])).rowcount
-            if updated:
-                result, message = "success", f"FINISH 成功：{order['order_no']}"
-                _inspection_audit("finish", "inspection_order", order["id"], {"order_no": order["order_no"], "employee_no": current_worker["employee_no"]}, current_worker["name"])
-            else:
-                result, message = "invalid", "訂單狀態已變更，請重新掃描"
+            result, message = "pending", "FINISH 已掃描，請填寫校機測試數值後確認完成"
     recorded_type = pending_pause_action or pending_material_action or parsed["type"]
     _record_scan(event_id, payload, recorded_type, order["id"] if order else None, employee_no, result, message, scanned_at)
     db.commit()
-    return {"event_id": event_id, "result": result, "message": message, "scanned_at": scanned_at, "scan_kind": "order", "clear_worker": True, "clear_material_action": True, "clear_pause_action": True, "order_no": order["order_no"] if order else parsed.get("order_no", ""), "barcode_type": recorded_type}
+    is_finish_pending = result == "pending" and parsed.get("type") == "FINISH"
+    return {"event_id": event_id, "result": result, "message": message, "scanned_at": scanned_at, "scan_kind": "finish_pending" if is_finish_pending else "order", "clear_worker": not is_finish_pending, "clear_material_action": not is_finish_pending, "clear_pause_action": not is_finish_pending, "order_id": order["id"] if order else None, "order_no": order["order_no"] if order else parsed.get("order_no", ""), "barcode_type": recorded_type}
 
 
 def _complete_inspection_for_packing(db, order, packing_worker, scanned_at):

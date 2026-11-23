@@ -55,6 +55,20 @@ def pause_barcode():
     return make_pause_action_payload()
 
 
+def confirm_finish_with_test_results(client):
+    return client.post(
+        "/scan/finish-results",
+        data={
+            "origin_value": "0.02",
+            "backlash_correction_value": "0.01",
+            "current_min_value": "36",
+            "current_max_value": "38",
+            "grid_value": "4096",
+            "motor_spec": "測試馬達",
+        },
+    )
+
+
 def test_orders_allow_duplicate_machine_serial_but_not_order_number(app):
     model_id, *_ = setup_data(app)
     with app.app_context():
@@ -69,25 +83,77 @@ def test_orders_allow_duplicate_machine_serial_but_not_order_number(app):
 
 
 def test_order_form_accepts_typed_model_and_records_model_master(client, app):
-    order_form = client.get("/orders/new").get_data(as_text=True)
+    chooser = client.get("/orders/new").get_data(as_text=True)
+    assert "四軸機台" in chooser
+    assert "五軸機台" in chooser
+    order_form = client.get("/orders/new?axis_type=4").get_data(as_text=True)
     assert 'id="inspection-order-form"' in order_form
-    response = client.post("/orders/new", data={"order_no": "FORM-001", "model_name": "現場輸入機型", "machine_serial": "M-001"})
+    assert 'name="reinspection_reason"' not in order_form
+    assert 'name="axis_type" value="4"' in order_form
+    response = client.post("/orders/new", data={"order_no": "FORM-001", "model_name": "現場輸入機型", "machine_serial": "M-001", "axis_type": "4", "motor_brand": "三菱 MITSUBISHI", "motor_spec": "HG-154S-D48"})
     assert response.status_code == 302
     with app.app_context():
         order = get_db().execute("SELECT * FROM inspection_order WHERE order_no='FORM-001'").fetchone()
         model = get_db().execute("SELECT * FROM inspection_model_master WHERE id=?", (order["model_id"],)).fetchone()
         assert model["model_name"] == "現場輸入機型"
         assert order["model_name_snapshot"] == "現場輸入機型"
+        assert order["motor_brand"] == "三菱 MITSUBISHI"
+        assert order["motor_spec_snapshot"] == "HG-154S-D48"
 
 
 def test_order_form_can_reuse_existing_model(client, app):
     with app.app_context():
         create_model("HR-255", "HR255")
-    response = client.post("/orders/new", data={"order_no": "EXISTING-MODEL-001", "model_name": "HR-255", "machine_serial": "E27-01"})
+    response = client.post("/orders/new", data={"order_no": "EXISTING-MODEL-001", "model_name": "HR-255", "machine_serial": "E27-01", "axis_type": "4", "motor_brand": "三菱 MITSUBISHI", "motor_spec": "HG-154S-D48"})
     assert response.status_code == 302
     with app.app_context():
         order = get_db().execute("SELECT * FROM inspection_order WHERE order_no=?", ("EXISTING-MODEL-001",)).fetchone()
         assert order["model_id"] == get_db().execute("SELECT id FROM inspection_model_master WHERE model_name=?", ("HR-255",)).fetchone()["id"]
+
+
+def test_five_axis_order_details_display_and_correct_each_axis_motor(client, app):
+    with app.app_context():
+        model_id = create_model("FHR-255", "FHR255")
+        order_id = create_order(
+            "FIVE-MOTOR-001", model_id, "S27-01",
+            rotary_motor_brand="三菱 MITSUBISHI", rotary_motor_spec_snapshot="HG-104S-D48",
+            tilt_motor_brand="發那科 FANUC", tilt_motor_spec_snapshot="α8iF A06B-0227-B100",
+        )
+
+    page = client.get(f"/orders/{order_id}/edit").get_data(as_text=True)
+    assert "傾斜軸馬達品牌" in page
+    assert "旋轉軸馬達品牌" in page
+    assert 'name="tilt_motor_brand"' in page
+    assert 'name="rotary_motor_brand"' in page
+
+    response = client.post(
+        f"/orders/{order_id}/details-correct",
+        data={
+            "model_id": str(model_id), "machine_serial": "S27-01", "customer_name": "客戶甲",
+            "expected_ship_date": "2026-11-30", "tilt_motor_brand": "三菱 MITSUBISHI",
+            "tilt_motor_spec": "HG-154S-D48", "rotary_motor_brand": "發那科 FANUC",
+            "rotary_motor_spec": "α12iF A06B-0243-B100", "reason": "修正兩軸馬達資料",
+            "operator_name": "主管", "password": "TJR", "next": f"/orders/{order_id}/edit",
+        },
+    )
+    assert response.status_code == 302
+    with app.app_context():
+        order = get_order(order_id)
+        assert order["tilt_motor_brand"] == "三菱 MITSUBISHI"
+        assert order["tilt_motor_spec_snapshot"] == "HG-154S-D48"
+        assert order["rotary_motor_brand"] == "發那科 FANUC"
+        assert order["rotary_motor_spec_snapshot"] == "α12iF A06B-0243-B100"
+
+
+def test_order_form_requires_an_axis_selection(client, app):
+    response = client.post(
+        "/orders/new",
+        data={
+                "order_no": "NEW-MOTOR-001", "model_name": "HR-255", "machine_serial": "E27-01",
+        },
+    )
+    assert response.status_code == 200
+    assert "請先選擇四軸或五軸" in response.get_data(as_text=True)
 
 
 def test_operation_correction_backdates_order_and_allows_finish(client, app):
@@ -124,7 +190,8 @@ def test_operation_correction_backdates_order_and_allows_finish(client, app):
         finish_payload = payload_for(order_a, "FINISH")
     client.post("/api/scan", json={"payload": employee_payload})
     finish = client.post("/api/scan", json={"payload": finish_payload})
-    assert finish.json["result"] == "success"
+    assert finish.json["result"] == "pending"
+    assert confirm_finish_with_test_results(client).status_code == 302
 
 
 def test_report_drops_date_filters_and_can_delete_pending_order(client, app):
@@ -461,9 +528,131 @@ def test_employee_start_finish_is_bound_and_consumed(client, app):
         assert "先掃描" in finish_without_employee.json["message"]
         client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
         finish = client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")})
-        assert finish.json["result"] == "success"
+        assert finish.json["result"] == "pending"
+        assert get_order(order_a)["status"] == "started"
+        assert confirm_finish_with_test_results(client).status_code == 302
         assert get_order(order_a)["status"] == "completed"
         assert get_order(order_a)["worker_no_snapshot"] == "E001"
+        assert get_order(order_a)["test_backlash_value"] == "0.01"
+        assert get_order(order_a)["test_current_min_value"] == "36"
+        assert get_order(order_a)["test_current_max_value"] == "38"
+
+
+def test_finish_requires_test_results_before_completing_and_shows_dialog(client, app):
+    _, worker_a, _, order_a, _ = setup_data(app)
+    with app.app_context():
+        client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
+        client.post("/api/scan", json={"payload": payload_for(order_a, "START")})
+        client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
+        pending = client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")})
+        assert pending.json["result"] == "pending"
+
+    incomplete = client.post(
+        "/scan/finish-results",
+        data={"backlash_correction_value": "", "current_min_value": "36", "current_max_value": "38", "grid_value": "4096", "motor_spec": "測試馬達"},
+    )
+    assert incomplete.status_code == 302
+    with app.app_context():
+        assert get_order(order_a)["status"] == "started"
+
+    reversed_range = client.post(
+        "/scan/finish-results",
+        data={"backlash_correction_value": "0.01", "current_min_value": "38", "current_max_value": "36", "grid_value": "4096", "motor_spec": "測試馬達"},
+    )
+    assert reversed_range.status_code == 302
+    with app.app_context():
+        assert get_order(order_a)["status"] == "started"
+
+    page = client.get("/scan").get_data(as_text=True)
+    assert 'id="finish-results-dialog"' in page
+    assert 'name="backlash_correction_value"' in page
+    assert 'name="current_min_value"' in page
+    assert 'name="current_max_value"' in page
+    assert 'name="grid_value"' in page
+    assert 'name="motor_spec"' not in page
+    assert "馬達型號" in page
+    assert 'formnovalidate' in page
+    assert confirm_finish_with_test_results(client).status_code == 302
+    with app.app_context():
+        order = get_order(order_a)
+        assert order["status"] == "completed"
+        assert order["test_origin_value"] == "0.02"
+        assert order["motor_installed_by_us"] == 1
+        assert order["test_grid_value"] == "4096"
+        assert order["test_motor_spec"] == "測試馬達"
+
+
+def test_five_axis_finish_requires_and_saves_two_motor_specs(client, app):
+    with app.app_context():
+        model_id = create_model("FHR-255", "FHR255")
+        worker_id = create_inspection_worker("E005", "五軸校機員")
+        order_id = create_order("FIVE-001", model_id, "S27-01")
+        worker_payload = worker_barcode(worker_id)
+        start_payload = payload_for(order_id, "START")
+        finish_payload = payload_for(order_id, "FINISH")
+
+    client.post("/api/scan", json={"payload": worker_payload})
+    client.post("/api/scan", json={"payload": start_payload})
+    client.post("/api/scan", json={"payload": worker_payload})
+    assert client.post("/api/scan", json={"payload": finish_payload}).json["result"] == "pending"
+
+    page = client.get("/scan").get_data(as_text=True)
+    assert 'name="rotary_origin_value"' in page
+    assert 'name="tilt_origin_value"' in page
+    assert 'name="rotary_backlash_value"' in page
+    assert 'name="tilt_backlash_value"' in page
+    assert 'name="rotary_current_min_value"' in page
+    assert 'name="tilt_current_min_value"' in page
+    assert 'name="rotary_grid_value"' in page
+    assert 'name="tilt_grid_value"' in page
+    assert 'name="rotary_motor_spec"' not in page
+    assert 'name="tilt_motor_spec"' not in page
+    assert 'name="motor_spec"' not in page
+    response = client.post(
+        "/scan/finish-results",
+        data={
+            "rotary_origin_value": "0.01", "rotary_backlash_value": "0.02", "rotary_current_min_value": "36", "rotary_current_max_value": "38",
+            "rotary_grid_value": "4096", "rotary_motor_spec": "HG-104S-D48",
+            "tilt_origin_value": "", "tilt_backlash_value": "0.03", "tilt_current_min_value": "34", "tilt_current_max_value": "36",
+            "tilt_grid_value": "2048", "tilt_motor_spec": "HG-154S-D48",
+        },
+    )
+    assert response.status_code == 302
+    with app.app_context():
+        order = get_order(order_id)
+        assert order["status"] == "completed"
+        assert order["test_rotary_origin_value"] == "0.01"
+        assert order["rotary_motor_installed_by_us"] == 1
+        assert order["tilt_motor_installed_by_us"] == 0
+        assert order["test_rotary_current_min_value"] == "36"
+        assert order["test_tilt_current_max_value"] == "36"
+        assert order["test_tilt_grid_value"] == "2048"
+        assert order["test_rotary_motor_spec"] == "HG-104S-D48"
+        assert order["test_tilt_motor_spec"] == "HG-154S-D48"
+        assert order["test_motor_spec"] == ""
+
+
+def test_finish_motor_spec_options_include_defaults_and_remember_new_entries(client, app):
+    model_id, worker_id, _, order_id, _ = setup_data(app)
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM inspection_motor_spec").fetchone()[0] == 38
+        worker_payload = worker_barcode(worker_id)
+        start_payload = payload_for(order_id, "START")
+        finish_payload = payload_for(order_id, "FINISH")
+    client.post("/api/scan", json={"payload": worker_payload})
+    client.post("/api/scan", json={"payload": start_payload})
+    client.post("/api/scan", json={"payload": worker_payload})
+    client.post("/api/scan", json={"payload": finish_payload})
+    page = client.get("/scan").get_data(as_text=True)
+    assert 'list="motor-spec-options"' not in page
+    assert "馬達型號" in page
+    response = client.post("/scan/finish-results", data={
+        "backlash_correction_value": "0.01", "current_min_value": "36", "current_max_value": "38",
+        "grid_value": "4096", "motor_spec": "現場新增馬達-01",
+    })
+    assert response.status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT spec FROM inspection_motor_spec WHERE spec=?", ("現場新增馬達-01",)).fetchone()["spec"] == "現場新增馬達-01"
 
 
 def test_scanned_worker_can_be_replaced_or_cleared(client, app):
@@ -541,7 +730,8 @@ def test_finish_requires_original_worker_and_duplicate_is_idempotent(client, app
         assert response.status_code == 400
         assert "原認領" in response.json["message"]
         client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
-        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "success"
+        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "pending"
+        assert confirm_finish_with_test_results(client).status_code == 302
         client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
         duplicate = client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")})
         assert duplicate.json["result"] == "duplicate"
@@ -585,7 +775,8 @@ def test_material_shortage_pause_resume_and_net_work_time(client, app):
         assert get_order(order_a)["material_paused"] == 0
 
         client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
-        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "success"
+        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "pending"
+        assert confirm_finish_with_test_results(client).status_code == 302
         db = get_db()
         db.execute("UPDATE inspection_order SET started_at='2026-10-28T00:00:00+00:00',finished_at='2026-10-28T02:00:00+00:00' WHERE id=?", (order_a,))
         db.execute("UPDATE inspection_material_pause SET paused_at='2026-10-28T00:30:00+00:00',resumed_at='2026-10-28T01:00:00+00:00' WHERE order_id=?", (order_a,))
@@ -622,7 +813,8 @@ def test_manual_pause_resume_excludes_time_from_actual_work_and_blocks_finish(cl
         assert get_order(order_a)["manual_paused"] == 0
 
         client.post("/api/scan", json={"payload": worker_barcode(worker_a)})
-        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "success"
+        assert client.post("/api/scan", json={"payload": payload_for(order_a, "FINISH")}).json["result"] == "pending"
+        assert confirm_finish_with_test_results(client).status_code == 302
 
         db = get_db()
         db.execute("UPDATE inspection_order SET started_at='2026-10-28T00:00:00+00:00',finished_at='2026-10-28T03:00:00+00:00' WHERE id=?", (order_a,))

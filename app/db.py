@@ -182,6 +182,14 @@ CREATE TABLE IF NOT EXISTS inspection_worker (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS inspection_motor_spec (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand TEXT NOT NULL DEFAULT '',
+    spec TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS packing_worker (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     employee_no TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -202,6 +210,12 @@ CREATE TABLE IF NOT EXISTS inspection_order (
     customer_name TEXT NOT NULL DEFAULT '',
     expected_ship_date TEXT,
     reinspection_reason TEXT NOT NULL DEFAULT '',
+    motor_brand TEXT NOT NULL DEFAULT '',
+    motor_spec_snapshot TEXT NOT NULL DEFAULT '',
+    rotary_motor_brand TEXT NOT NULL DEFAULT '',
+    rotary_motor_spec_snapshot TEXT NOT NULL DEFAULT '',
+    tilt_motor_brand TEXT NOT NULL DEFAULT '',
+    tilt_motor_spec_snapshot TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','started','completed','cancelled')),
     worker_id INTEGER REFERENCES inspection_worker(id),
     worker_no_snapshot TEXT,
@@ -217,7 +231,32 @@ CREATE TABLE IF NOT EXISTS inspection_order (
     started_at TEXT,
     finished_at TEXT,
     cancelled_at TEXT,
-    cancelled_by TEXT
+    cancelled_by TEXT,
+    test_origin_value TEXT,
+    test_backlash_value TEXT,
+    test_scale_ratio_value TEXT,
+    test_go_speed_value TEXT,
+    test_current_value TEXT,
+    test_motor_model TEXT,
+    test_grid_value TEXT,
+    test_motor_spec TEXT,
+    test_rotary_motor_spec TEXT,
+    test_tilt_motor_spec TEXT,
+    test_rotary_origin_value TEXT,
+    test_tilt_origin_value TEXT,
+    test_rotary_backlash_value TEXT,
+    test_tilt_backlash_value TEXT,
+    test_rotary_current_min_value TEXT,
+    test_rotary_current_max_value TEXT,
+    test_tilt_current_min_value TEXT,
+    test_tilt_current_max_value TEXT,
+    test_rotary_grid_value TEXT,
+    test_tilt_grid_value TEXT,
+    test_current_min_value TEXT,
+    test_current_max_value TEXT,
+    motor_installed_by_us INTEGER NOT NULL DEFAULT 0 CHECK(motor_installed_by_us IN (0,1)),
+    rotary_motor_installed_by_us INTEGER NOT NULL DEFAULT 0 CHECK(rotary_motor_installed_by_us IN (0,1)),
+    tilt_motor_installed_by_us INTEGER NOT NULL DEFAULT 0 CHECK(tilt_motor_installed_by_us IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS inspection_barcode_record (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,6 +313,7 @@ CREATE TABLE IF NOT EXISTS inspection_audit_log (
 CREATE INDEX IF NOT EXISTS idx_inspection_order_status ON inspection_order(status);
 CREATE INDEX IF NOT EXISTS idx_inspection_order_created_at ON inspection_order(created_at);
 CREATE INDEX IF NOT EXISTS idx_inspection_order_machine_serial ON inspection_order(machine_serial);
+CREATE INDEX IF NOT EXISTS idx_inspection_motor_spec_active ON inspection_motor_spec(is_active, spec);
 CREATE INDEX IF NOT EXISTS idx_inspection_scan_event_time ON inspection_scan_event(scanned_at);
 CREATE INDEX IF NOT EXISTS idx_inspection_material_pause_order ON inspection_material_pause(order_id, paused_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_inspection_material_pause_open ON inspection_material_pause(order_id) WHERE resumed_at IS NULL;
@@ -329,11 +369,87 @@ def migrate_inspection_schema(db):
     for column, definition in packing_columns.items():
         if column not in order_columns:
             db.execute(f"ALTER TABLE inspection_order ADD COLUMN {column} {definition}")
+    order_columns = {row["name"] for row in db.execute("PRAGMA table_info(inspection_order)")}
+    completion_test_columns = {
+        "test_origin_value": "TEXT",
+        "test_backlash_value": "TEXT",
+        "test_scale_ratio_value": "TEXT",
+        "test_go_speed_value": "TEXT",
+        "test_current_value": "TEXT",
+        "test_motor_model": "TEXT",
+        "test_grid_value": "TEXT",
+        "test_motor_spec": "TEXT",
+        "test_rotary_motor_spec": "TEXT",
+        "test_tilt_motor_spec": "TEXT",
+        "test_rotary_origin_value": "TEXT",
+        "test_tilt_origin_value": "TEXT",
+        "test_rotary_backlash_value": "TEXT",
+        "test_tilt_backlash_value": "TEXT",
+        "test_rotary_current_min_value": "TEXT",
+        "test_rotary_current_max_value": "TEXT",
+        "test_tilt_current_min_value": "TEXT",
+        "test_tilt_current_max_value": "TEXT",
+        "test_rotary_grid_value": "TEXT",
+        "test_tilt_grid_value": "TEXT",
+        "rotary_motor_installed_by_us": "INTEGER NOT NULL DEFAULT 0 CHECK(rotary_motor_installed_by_us IN (0,1))",
+        "tilt_motor_installed_by_us": "INTEGER NOT NULL DEFAULT 0 CHECK(tilt_motor_installed_by_us IN (0,1))",
+        "test_current_min_value": "TEXT",
+        "test_current_max_value": "TEXT",
+        "motor_installed_by_us": "INTEGER NOT NULL DEFAULT 0 CHECK(motor_installed_by_us IN (0,1))",
+    }
+    for column, definition in completion_test_columns.items():
+        if column not in order_columns:
+            db.execute(f"ALTER TABLE inspection_order ADD COLUMN {column} {definition}")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS inspection_motor_spec (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand TEXT NOT NULL DEFAULT '',
+            spec TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    motor_spec_columns = {row["name"] for row in db.execute("PRAGMA table_info(inspection_motor_spec)")}
+    if "brand" not in motor_spec_columns:
+        db.execute("ALTER TABLE inspection_motor_spec ADD COLUMN brand TEXT NOT NULL DEFAULT ''")
+    order_columns = {row["name"] for row in db.execute("PRAGMA table_info(inspection_order)")}
+    for column in ("motor_brand", "motor_spec_snapshot", "rotary_motor_brand", "rotary_motor_spec_snapshot", "tilt_motor_brand", "tilt_motor_spec_snapshot"):
+        if column not in order_columns:
+            db.execute(f"ALTER TABLE inspection_order ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_inspection_motor_spec_active ON inspection_motor_spec(is_active, spec)")
+    motor_specs = (
+        "HG-104S-D48", "HG-105S-D48", "HG-154BS-D48", "HG-154S-D48", "HG-204S-D48", "HG-54T-D48", "HG-75T-D48",
+        "α12iF A06B-0243-B100", "α12iF A06B-2243-B100", "α22iF A06B-0247-B100", "α4iF A06B-2223-B100", "α8iF A06B-0227-B100", "α8iF A06B-2227-B000", "α8iF A06B-2227-B100",
+        "α12iS A06B-2238-B100", "α4iS A06B-2215-B000", "α4iS A06B-2215-B100",
+        "β12iS A06B-2078-B003", "β12iS A06B-2078-B103", "β22iS A06B-2085-B103", "β4iS A06B-2063-B003", "β4iS A06B-2063-B103", "β8iS A06B-0075-B003", "β8iS A06B-0075-B103", "β8iS A06B-2075-B003", "β8iS A06B-2075-B103", "β8iS A06B-2078-B103",
+        "SGM7G-13A", "SGM7G-13AFA61", "SGMGH-09ACA61",
+        "1FK7060-2AF71-1RG2", "1FK7063-2AF71-1RG2", "1FK7083-2AF71-1RG2", "1FK7083-2AF74-1EG1",
+        "S08-AM11-40-F3(鴻碩提供)", "S08-AM8-40-F3(鴻碩提供)", "FKM64.30A", "QSY-130E",
+    )
+    now = utc_now()
+    db.executemany(
+        "INSERT OR IGNORE INTO inspection_motor_spec(spec,created_at,updated_at) VALUES (?,?,?)",
+        [(spec, now, now) for spec in motor_specs],
+    )
+    motor_brands = {
+        "三菱 MITSUBISHI": ("HG-104S-D48", "HG-105S-D48", "HG-154BS-D48", "HG-154S-D48", "HG-204S-D48", "HG-54T-D48", "HG-75T-D48"),
+        "發那科 FANUC": ("α12iF A06B-0243-B100", "α12iF A06B-2243-B100", "α22iF A06B-0247-B100", "α4iF A06B-2223-B100", "α8iF A06B-0227-B100", "α8iF A06B-2227-B000", "α8iF A06B-2227-B100", "α12iS A06B-2238-B100", "α4iS A06B-2215-B000", "α4iS A06B-2215-B100", "β12iS A06B-2078-B003", "β12iS A06B-2078-B103", "β22iS A06B-2085-B103", "β4iS A06B-2063-B003", "β4iS A06B-2063-B103", "β8iS A06B-0075-B003", "β8iS A06B-0075-B103", "β8iS A06B-2075-B003", "β8iS A06B-2075-B103", "β8iS A06B-2078-B103"),
+        "安川 YASAKAWA": ("SGM7G-13A", "SGM7G-13AFA61", "SGMGH-09ACA61"),
+        "西門子 SIEMENS": ("1FK7060-2AF71-1RG2", "1FK7063-2AF71-1RG2", "1FK7083-2AF71-1RG2", "1FK7083-2AF74-1EG1"),
+        "新代 SYNTEC": ("S08-AM11-40-F3(鴻碩提供)", "S08-AM8-40-F3(鴻碩提供)"),
+        "發格 FAGOR": ("FKM64.30A",), "海德漢 HEIDENHAIN": ("QSY-130E",),
+    }
+    db.executemany(
+        "UPDATE inspection_motor_spec SET brand=?,updated_at=? WHERE spec=?",
+        [(brand, now, spec) for brand, specs in motor_brands.items() for spec in specs],
+    )
     scan_columns = {row["name"] for row in db.execute("PRAGMA table_info(inspection_scan_event)")}
     if "process_stage" not in scan_columns:
         db.execute("ALTER TABLE inspection_scan_event ADD COLUMN process_stage TEXT NOT NULL DEFAULT 'inspection' CHECK(process_stage IN ('inspection','packing'))")
     db.execute("CREATE INDEX IF NOT EXISTS idx_inspection_order_packing_status ON inspection_order(packing_status)")
     db.execute("INSERT OR IGNORE INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (5, utc_now()))
+    db.execute("INSERT OR IGNORE INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (6, utc_now()))
 
     db.executescript(SCHEMA)
     needs_batch_mode_migration = db.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone() is None

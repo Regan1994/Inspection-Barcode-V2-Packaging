@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.db import get_db
-from app.services import TAIPEI_TZ, create_inspection_worker, create_model, create_order, create_packing_worker, format_datetime, get_order, packing_scan, scan
+from app.services import TAIPEI_TZ, complete_inspection_finish_with_test_results, create_inspection_worker, create_model, create_order, create_packing_worker, format_datetime, get_order, packing_scan, scan
 
 
 def _barcode(table, worker_id):
@@ -30,7 +30,12 @@ def _complete_inspection(worker_id, order_id):
     assert scan(_barcode("inspection_worker", worker_id))["result"] == "success"
     assert scan(_order_barcode(order_id, "START"), worker_id)["result"] == "success"
     assert scan(_barcode("inspection_worker", worker_id))["result"] == "success"
-    assert scan(_order_barcode(order_id, "FINISH"), worker_id)["result"] == "success"
+    finish = scan(_order_barcode(order_id, "FINISH"), worker_id)
+    assert finish["result"] == "pending"
+    complete_inspection_finish_with_test_results(
+        order_id, worker_id, finish["scanned_at"], finish["event_id"],
+        "0", "0.01", "36", "38", "4096", "測試馬達",
+    )
 
 
 def test_packing_auto_completes_pending_inspection_and_uses_same_worker(app):

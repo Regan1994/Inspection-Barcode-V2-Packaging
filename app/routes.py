@@ -10,7 +10,7 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 from .barcode import code128_svg
 from .db import get_db
 from .services import ASSEMBLY_STAGES, DEBUG_CLEAR_CHOICES, access_password_enabled, backup_database, change_access_password, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_batch, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, is_five_axis_model, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_access_password_enabled, set_assembly_worker_active, summarize_report_by_operator, update_model, verify_access_password
-from .services import create_packing_worker, delete_packing_worker, get_packing_worker, list_packing_workers, packing_scan, set_packing_worker_active, update_packing_worker
+from .services import create_packing_worker, delete_packing_worker, get_packing_worker, list_inspection_motor_specs, list_packing_workers, packing_scan, set_packing_worker_active, update_packing_worker
 
 bp = Blueprint("main", __name__)
 
@@ -350,6 +350,7 @@ from .services import (
     cancel_order,
     change_access_password,
     clear_debug_data,
+    complete_inspection_finish_with_test_results,
     correct_order_details,
     correct_order_timeline,
     correct_operation_timeline,
@@ -613,11 +614,34 @@ def packing_worker_print():
 def orders_new():
     if request.method == "POST":
         try:
-            order_id = create_order(request.form.get("order_no"), machine_serial=request.form.get("machine_serial"), customer_name=request.form.get("customer_name"), expected_ship_date=request.form.get("expected_ship_date"), reinspection_reason=request.form.get("reinspection_reason"), model_name=request.form.get("model_name"))
+            axis_type = request.form.get("axis_type")
+            if axis_type not in {"4", "5"}:
+                raise ValueError("請先選擇四軸或五軸")
+            model_name = (request.form.get("model_name") or "").strip().upper()
+            model_is_five_axis = model_name.startswith(("F", "M"))
+            if (axis_type == "5") != model_is_five_axis:
+                raise ValueError("選擇的軸別與機型不一致；F／M 開頭的機型請選五軸，其餘機型請選四軸")
+            if axis_type == "4":
+                custom_motor = request.form.get("new_motor_enabled") == "1"
+                motor_brand = request.form.get("new_motor_brand") if custom_motor else request.form.get("motor_brand")
+                motor_spec = request.form.get("new_motor_spec") if custom_motor else request.form.get("motor_spec")
+                rotary_brand = rotary_spec = tilt_brand = tilt_spec = ""
+            else:
+                motor_brand = motor_spec = ""
+                rotary_custom = request.form.get("rotary_new_motor_enabled") == "1"
+                tilt_custom = request.form.get("tilt_new_motor_enabled") == "1"
+                rotary_brand = request.form.get("rotary_new_motor_brand") if rotary_custom else request.form.get("rotary_motor_brand")
+                rotary_spec = request.form.get("rotary_new_motor_spec") if rotary_custom else request.form.get("rotary_motor_spec")
+                tilt_brand = request.form.get("tilt_new_motor_brand") if tilt_custom else request.form.get("tilt_motor_brand")
+                tilt_spec = request.form.get("tilt_new_motor_spec") if tilt_custom else request.form.get("tilt_motor_spec")
+            order_id = create_order(request.form.get("order_no"), machine_serial=request.form.get("machine_serial"), customer_name=request.form.get("customer_name"), expected_ship_date=request.form.get("expected_ship_date"), motor_brand=motor_brand, motor_spec_snapshot=motor_spec, rotary_motor_brand=rotary_brand, rotary_motor_spec_snapshot=rotary_spec, tilt_motor_brand=tilt_brand, tilt_motor_spec_snapshot=tilt_spec, model_name=request.form.get("model_name"), axis_type=axis_type)
             return redirect(url_for("main.order_print", order_id=order_id))
         except (ValueError, KeyError) as exc:
             flash(str(exc), "error")
-    return render_template("inspection_order_new.html")
+    axis_type = request.args.get("axis_type", "")
+    if axis_type not in {"4", "5"}:
+        axis_type = ""
+    return render_template("inspection_order_new.html", motor_specs=list_inspection_motor_specs(), axis_type=axis_type)
 
 
 @bp.get("/orders/recent")
@@ -649,6 +673,7 @@ def order_edit(order_id):
         correction_workers=list_inspection_workers(),
         packing_correction_workers=list_packing_workers(),
         order_models=list_models(),
+        motor_specs=list_inspection_motor_specs(),
         corrections=list_order_corrections(order_id),
         datetime_local_value=datetime_local_value,
         delete_token=token,
@@ -661,6 +686,21 @@ def order_edit(order_id):
 def order_details_correct(order_id):
     next_path = safe_next_path(request.form.get("next"))
     try:
+        order = get_order(order_id)
+        if not order:
+            raise ValueError("找不到訂單")
+        motor_brand = motor_spec = rotary_brand = rotary_spec = tilt_brand = tilt_spec = None
+        if order["axis_type_snapshot"] == "5":
+            rotary_adding = request.form.get("rotary_new_motor_enabled") == "1"
+            tilt_adding = request.form.get("tilt_new_motor_enabled") == "1"
+            rotary_brand = request.form.get("rotary_new_motor_brand") if rotary_adding else request.form.get("rotary_motor_brand")
+            rotary_spec = request.form.get("rotary_new_motor_spec") if rotary_adding else request.form.get("rotary_motor_spec")
+            tilt_brand = request.form.get("tilt_new_motor_brand") if tilt_adding else request.form.get("tilt_motor_brand")
+            tilt_spec = request.form.get("tilt_new_motor_spec") if tilt_adding else request.form.get("tilt_motor_spec")
+        else:
+            adding_motor = request.form.get("new_motor_enabled") == "1"
+            motor_brand = request.form.get("new_motor_brand") if adding_motor else request.form.get("motor_brand")
+            motor_spec = request.form.get("new_motor_spec") if adding_motor else request.form.get("motor_spec")
         backup = correct_order_details(
             order_id,
             request.form.get("model_id"),
@@ -672,6 +712,12 @@ def order_details_correct(order_id):
             request.form.get("operator_name"),
             request.form.get("password"),
             current_app.config["BACKUP_DIRECTORY"],
+            motor_brand=motor_brand,
+            motor_spec_snapshot=motor_spec,
+            rotary_motor_brand=rotary_brand,
+            rotary_motor_spec_snapshot=rotary_spec,
+            tilt_motor_brand=tilt_brand,
+            tilt_motor_spec_snapshot=tilt_spec,
         )
         flash(f"訂單基本資料已修正；修改前備份：{backup.name}", "success")
     except (ValueError, OSError, sqlite3.Error) as exc:
@@ -862,6 +908,7 @@ def scan_reset():
     session.pop("scan_worker_id", None)
     session.pop("scan_material_action", None)
     session.pop("scan_pause_action", None)
+    session.pop("pending_finish", None)
     flash("已清除目前員工與待處理的缺料／補料／暫停操作", "success")
     return redirect(url_for("main.scan_page"))
 
@@ -912,20 +959,31 @@ def scan_page():
             session["scan_worker_id"] = result["worker_id"]
             session.pop("scan_material_action", None)
             session.pop("scan_pause_action", None)
+            session.pop("pending_finish", None)
         elif result.get("scan_kind") == "material_action" and result.get("material_action"):
             session["scan_material_action"] = result["material_action"]
             session.pop("scan_pause_action", None)
+            session.pop("pending_finish", None)
         elif result.get("scan_kind") == "pause_action" and result.get("pause_action"):
             session["scan_pause_action"] = result["pause_action"]
             session.pop("scan_material_action", None)
+            session.pop("pending_finish", None)
+        elif result.get("scan_kind") == "finish_pending":
+            session["pending_finish"] = {
+                "order_id": result["order_id"], "worker_id": session.get("scan_worker_id"),
+                "scanned_at": result["scanned_at"], "event_id": result["event_id"],
+            }
         elif result.get("scan_kind") == "order":
             session.pop("scan_worker_id", None)
             session.pop("scan_material_action", None)
             session.pop("scan_pause_action", None)
+            session.pop("pending_finish", None)
+    pending_finish = session.get("pending_finish")
+    pending_finish_order = get_order(pending_finish["order_id"]) if pending_finish else None
     current_worker = get_inspection_worker(session["scan_worker_id"]) if session.get("scan_worker_id") else None
     pending_action = session.get("scan_material_action") or session.get("scan_pause_action")
     pending_action_label = {"SHORTAGE": "缺料", "REPLENISH": "補料", "PAUSE": "暫停"}.get(pending_action)
-    return render_template("inspection_scan.html", result=result, current_worker=current_worker, pending_action_label=pending_action_label)
+    return render_template("inspection_scan.html", result=result, current_worker=current_worker, pending_action_label=pending_action_label, pending_finish_order=pending_finish_order, motor_specs=list_inspection_motor_specs())
 
 
 @bp.post("/api/scan")
@@ -940,17 +998,62 @@ def api_scan():
         session["scan_worker_id"] = result["worker_id"]
         session.pop("scan_material_action", None)
         session.pop("scan_pause_action", None)
+        session.pop("pending_finish", None)
     elif result.get("scan_kind") == "material_action" and result.get("material_action"):
         session["scan_material_action"] = result["material_action"]
         session.pop("scan_pause_action", None)
+        session.pop("pending_finish", None)
     elif result.get("scan_kind") == "pause_action" and result.get("pause_action"):
         session["scan_pause_action"] = result["pause_action"]
         session.pop("scan_material_action", None)
+        session.pop("pending_finish", None)
+    elif result.get("scan_kind") == "finish_pending":
+        session["pending_finish"] = {
+            "order_id": result["order_id"], "worker_id": session.get("scan_worker_id"),
+            "scanned_at": result["scanned_at"], "event_id": result["event_id"],
+        }
     elif result.get("scan_kind") == "order":
         session.pop("scan_worker_id", None)
         session.pop("scan_material_action", None)
         session.pop("scan_pause_action", None)
-    return jsonify(result), 200 if result["result"] in {"success", "duplicate"} else 400
+        session.pop("pending_finish", None)
+    return jsonify(result), 200 if result["result"] in {"success", "duplicate", "pending"} else 400
+
+
+@bp.post("/scan/finish-results")
+def scan_finish_results():
+    pending = session.get("pending_finish")
+    if not pending:
+        flash("沒有待確認的 FINISH，請重新掃描訂單 FINISH 條碼", "error")
+        return redirect(url_for("main.scan_page"))
+    try:
+        message = complete_inspection_finish_with_test_results(
+            pending["order_id"], pending["worker_id"], pending["scanned_at"], pending["event_id"],
+            request.form.get("origin_value"), request.form.get("backlash_correction_value"),
+            request.form.get("current_min_value"), request.form.get("current_max_value"), request.form.get("grid_value"),
+            motor_spec=request.form.get("motor_spec"),
+            rotary_motor_spec=request.form.get("rotary_motor_spec"),
+            tilt_motor_spec=request.form.get("tilt_motor_spec"),
+            rotary_origin_value=request.form.get("rotary_origin_value"),
+            tilt_origin_value=request.form.get("tilt_origin_value"),
+            rotary_backlash_value=request.form.get("rotary_backlash_value"),
+            tilt_backlash_value=request.form.get("tilt_backlash_value"),
+            rotary_current_min_value=request.form.get("rotary_current_min_value"),
+            rotary_current_max_value=request.form.get("rotary_current_max_value"),
+            tilt_current_min_value=request.form.get("tilt_current_min_value"),
+            tilt_current_max_value=request.form.get("tilt_current_max_value"),
+            rotary_grid_value=request.form.get("rotary_grid_value"),
+            tilt_grid_value=request.form.get("tilt_grid_value"),
+        )
+    except (ValueError, sqlite3.Error) as exc:
+        flash(f"尚未完成校機：{exc}", "error")
+    else:
+        session.pop("pending_finish", None)
+        session.pop("scan_worker_id", None)
+        session.pop("scan_material_action", None)
+        session.pop("scan_pause_action", None)
+        flash(message, "success")
+    return redirect(url_for("main.scan_page"))
 
 
 @bp.route("/reports", methods=["GET", "POST"])

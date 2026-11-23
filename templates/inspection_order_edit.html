@@ -38,11 +38,45 @@
   <p class="muted">可修改目前訂單資料；訂單號碼與既有作業紀錄不可修改。每次儲存都會留下修改前後內容、原因、修改人與備份紀錄。</p>
   <form method="post" action="{{ url_for('main.order_details_correct', order_id=order.id) }}" class="form-wide" onsubmit="return confirm('確定儲存這次訂單基本資料修正？');">
     <div class="grid two">
-      <label>機型<select name="model_id" required>{% for model in order_models %}<option value="{{ model.id }}" {% if model.id == order.model_id %}selected{% endif %}{% if not model.is_active and model.id != order.model_id %} disabled{% endif %}>{{ model.model_name }}{% if not model.is_active %}［已停用］{% endif %}</option>{% endfor %}</select></label>
-      <label>機台製號<input name="machine_serial" value="{{ order.machine_serial }}" maxlength="80" required></label>
       <label>客戶<input name="customer_name" value="{{ order.customer_name or '' }}" maxlength="120"></label>
       <label>預計出貨日<input type="date" name="expected_ship_date" value="{{ order.expected_ship_date or '' }}"></label>
-      <label>重新檢驗原因<input name="reinspection_reason" value="{{ order.reinspection_reason or '' }}" maxlength="200"></label>
+    </div>
+    <div class="grid two">
+      <label>機型<select name="model_id" required>{% for model in order_models %}<option value="{{ model.id }}" {% if model.id == order.model_id %}selected{% endif %}{% if not model.is_active and model.id != order.model_id %} disabled{% endif %}>{{ model.model_name }}{% if not model.is_active %}［已停用］{% endif %}</option>{% endfor %}</select></label>
+      <label>機台製號<input name="machine_serial" value="{{ order.machine_serial }}" maxlength="80" required></label>
+    </div>
+    {% if order.axis_type_snapshot == '5' %}
+    <div class="edit-axis-motor-groups">
+      {% for prefix, label, brand, spec in [('tilt_', '傾斜軸', order.tilt_motor_brand, order.tilt_motor_spec_snapshot), ('rotary_', '旋轉軸', order.rotary_motor_brand, order.rotary_motor_spec_snapshot)] %}
+      <section class="axis-motor-card" data-motor-selector>
+        <h3>{{ label }}馬達</h3>
+        <div class="grid two">
+          <label>馬達品牌（可選）<select name="{{ prefix }}motor_brand" class="motor-brand"><option value="">不選擇</option>{% for group in motor_specs|groupby('brand') %}{% if group.grouper %}<option value="{{ group.grouper }}" {% if group.grouper == brand %}selected{% endif %}>{{ group.grouper }}</option>{% endif %}{% endfor %}</select></label>
+          <label>馬達型號（可選）<select name="{{ prefix }}motor_spec" class="motor-spec" data-selected="{{ spec }}" disabled><option value="">不選擇</option></select></label>
+        </div>
+        <input type="hidden" name="{{ prefix }}new_motor_enabled" class="new-motor-enabled" value="0">
+        <button type="button" class="text-button add-motor-button">＋ 找不到馬達？新增品牌／型號</button>
+        <div class="grid two new-motor-fields" hidden>
+          <label>新增馬達品牌<input name="{{ prefix }}new_motor_brand" class="new-motor-brand" maxlength="80" disabled></label>
+          <label>新增馬達型號<input name="{{ prefix }}new_motor_spec" class="new-motor-spec" maxlength="120" disabled></label>
+          <button type="button" class="text-button new-motor-cancel">取消新增，改用既有品牌／型號</button>
+        </div>
+      </section>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="grid two">
+      <div class="motor-brand-control"><label>馬達品牌<select name="motor_brand" id="motor-brand" required><option value="">請先選擇品牌</option>{% for group in motor_specs|groupby('brand') %}{% if group.grouper %}<option value="{{ group.grouper }}" {% if group.grouper == order.motor_brand %}selected{% endif %}>{{ group.grouper }}</option>{% endif %}{% endfor %}</select></label><button type="button" class="text-button" id="add-motor-button">＋ 找不到馬達？新增品牌／型號</button></div>
+      <label>馬達型號<select name="motor_spec" id="motor-spec" data-selected="{{ order.motor_spec_snapshot }}" required disabled><option value="">請先選擇品牌</option></select></label>
+    </div>
+    <input type="hidden" name="new_motor_enabled" id="new-motor-enabled" value="0">
+    <div class="grid two new-motor-fields" id="new-motor-fields" hidden>
+      <label>新增馬達品牌<input name="new_motor_brand" id="new-motor-brand" maxlength="80" disabled></label>
+      <label>新增馬達型號<input name="new_motor_spec" id="new-motor-spec" maxlength="120" disabled></label>
+      <button type="button" class="text-button new-motor-cancel" id="cancel-add-motor-button">取消新增，改用既有品牌／型號</button>
+    </div>
+    {% endif %}
+    <div class="grid two">
       <label>修改人<input name="operator_name" maxlength="80" required></label>
       <label>管理密碼<input type="password" name="password" autocomplete="current-password" required></label>
     </div>
@@ -114,6 +148,7 @@
   {% endif %}
 </section>
 {% endif %}
+<script id="motor-spec-catalog" type="application/json">{{ motor_specs|tojson }}</script>
 {% if corrections %}
 <section class="panel table-wrap">
   <h2>管理員修正紀錄</h2>
