@@ -353,6 +353,7 @@ from .services import (
     clear_debug_data,
     complete_inspection_finish_with_test_results,
     correct_order_details,
+    correct_order_test_results,
     correct_order_timeline,
     correct_operation_timeline,
     correct_packing_timeline,
@@ -403,7 +404,7 @@ PROTECTED_ENDPOINTS = {
     "main.models", "main.model_update", "main.model_delete", "main.inspection_workers",
     "main.inspection_motors", "main.inspection_motor_update", "main.inspection_motor_delete",
     "main.inspection_worker_status", "main.inspection_worker_update", "main.inspection_worker_delete", "main.worker_print", "main.orders_new", "main.orders",
-    "main.order_edit", "main.order_print", "main.order_details_correct", "main.order_admin_correct", "main.order_operation_timeline_correct", "main.order_packing_correct", "main.order_pause_correct", "main.order_pause_add", "main.order_cancel", "main.order_delete", "main.order_packing_complete", "main.reports", "main.reports_export",
+    "main.order_edit", "main.order_print", "main.order_details_correct", "main.order_test_results_correct", "main.order_admin_correct", "main.order_operation_timeline_correct", "main.order_packing_correct", "main.order_pause_correct", "main.order_pause_add", "main.order_cancel", "main.order_delete", "main.order_packing_complete", "main.reports", "main.reports_export",
     "main.settings", "main.change_password", "main.password_mode", "main.debug_clear",
     "main.backup", "main.restore", "main.material_barcodes_print",
     "main.pause_barcodes_print",
@@ -764,6 +765,38 @@ def order_details_correct(order_id):
         flash(f"訂單基本資料已修正；修改前備份：{backup.name}", "success")
     except (ValueError, OSError, sqlite3.Error) as exc:
         flash(f"沒有修正訂單基本資料：{exc}", "error")
+    return redirect(next_path)
+
+
+@bp.post("/orders/<int:order_id>/test-results-correct")
+def order_test_results_correct(order_id):
+    next_path = safe_next_path(request.form.get("next"))
+    try:
+        backup = correct_order_test_results(
+            order_id,
+            request.form.get("origin_value"),
+            request.form.get("backlash_correction_value"),
+            request.form.get("current_min_value"),
+            request.form.get("current_max_value"),
+            request.form.get("grid_value"),
+            request.form.get("rotary_origin_value"),
+            request.form.get("rotary_backlash_value"),
+            request.form.get("rotary_current_min_value"),
+            request.form.get("rotary_current_max_value"),
+            request.form.get("rotary_grid_value"),
+            request.form.get("tilt_origin_value"),
+            request.form.get("tilt_backlash_value"),
+            request.form.get("tilt_current_min_value"),
+            request.form.get("tilt_current_max_value"),
+            request.form.get("tilt_grid_value"),
+            request.form.get("reason"),
+            request.form.get("operator_name"),
+            request.form.get("password"),
+            current_app.config["BACKUP_DIRECTORY"],
+        )
+        flash(f"校機測試數值已修正；修改前備份：{backup.name}", "success")
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        flash(f"沒有修正校機測試數值：{exc}", "error")
     return redirect(next_path)
 
 
@@ -1193,6 +1226,7 @@ def manager():
         report_blocks=report_block_options(selected_blocks),
         report_columns=columns,
         selected_blocks=set(selected_blocks),
+        detail_selected_blocks=set(selected_report_blocks(("inspection_time", "packing_time", "inspection_values"))),
         total_rows=total_rows,
         current_page=current_page,
         total_pages=total_pages,

@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block body_class %}portal-theme{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='home.css') }}">{% endblock %}
-{% block header_nav %}{% endblock %}
+{% block header_nav %}<a href="{{ url_for('main.manager') }}">校機報表檢視器</a>{% endblock %}
 {% block content %}
 <section class="system-portal" aria-labelledby="portal-title">
   <div class="portal-heading">

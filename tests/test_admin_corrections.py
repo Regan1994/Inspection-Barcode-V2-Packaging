@@ -139,6 +139,40 @@ def test_admin_can_correct_order_details_and_audit_before_after_values(client, a
     assert "客戶：（空白） → 新客戶" in page
 
 
+def test_admin_can_correct_completed_test_results_with_audit_and_backup(client, app):
+    worker_a, _, order_id = setup_order(app)
+    client.post(f"/orders/{order_id}/admin-correct", data=correction_data(worker_a, finished_at="2026-10-29T10:00"))
+
+    response = client.post(
+        f"/orders/{order_id}/test-results-correct",
+        data={
+            "origin_value": "0.02", "backlash_correction_value": "8", "current_min_value": "44",
+            "current_max_value": "46", "grid_value": "5104", "reason": "電流與柵格量填錯",
+            "operator_name": "主管甲", "password": "TJR", "next": f"/orders/{order_id}/edit",
+        },
+    )
+    assert response.status_code == 302
+    with app.app_context():
+        order = get_order(order_id)
+        assert order["test_origin_value"] == "0.02"
+        assert order["test_backlash_value"] == "8"
+        assert order["test_current_min_value"] == "44"
+        assert order["test_current_max_value"] == "46"
+        assert order["test_grid_value"] == "5104"
+        audit = get_db().execute(
+            "SELECT * FROM inspection_audit_log WHERE action='admin_correct_test_results' AND entity_id=?", (str(order_id),)
+        ).fetchone()
+        details = json.loads(audit["details"])
+        assert details["old"]["test_current_min_value"] in (None, "")
+        assert details["new"]["test_current_max_value"] == "46"
+        assert details["reason"] == "電流與柵格量填錯"
+        assert details["backup"].endswith(".db")
+
+    page = client.get(f"/orders/{order_id}/edit").get_data(as_text=True)
+    assert "校機測試數值修正" in page
+    assert "電流下限：（空白） → 44" in page
+
+
 def test_completed_and_packed_order_can_be_cancelled_without_erasing_packing_history(client, app):
     worker_a, _, order_id = setup_order(app)
     client.post(

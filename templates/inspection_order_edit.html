@@ -32,6 +32,43 @@
     <a class="button" href="{{ url_for('main.reports') }}">返回訂單明細</a>
   </div>
 </section>
+{% if order.status == 'completed' %}
+<section class="panel">
+  <h2>校機測試數值修正</h2>
+  <p class="muted">填錯原點、背隙補正值、電流值或柵格量時，在此修正。每次儲存都會要求管理密碼、建立修改前備份，並保留修改前後紀錄。</p>
+  <form method="post" action="{{ url_for('main.order_test_results_correct', order_id=order.id) }}" class="form-wide" onsubmit="return confirm('確定儲存這次校機測試數值修正？');">
+    {% if order.axis_type_snapshot == '5' %}
+    {% for prefix, label in [('rotary', '旋轉軸'), ('tilt', '傾斜軸')] %}
+    <section class="axis-motor-card">
+      <h3>{{ label }}測試數值</h3>
+      <div class="grid two">
+        <label>原點（未安裝可留白）<input name="{{ prefix }}_origin_value" value="{{ order['test_' ~ prefix ~ '_origin_value'] or '' }}" maxlength="80"></label>
+        <label>背隙補正值<input name="{{ prefix }}_backlash_value" value="{{ order['test_' ~ prefix ~ '_backlash_value'] or '' }}" maxlength="80" required></label>
+        <label>電流下限<input name="{{ prefix }}_current_min_value" value="{{ order['test_' ~ prefix ~ '_current_min_value'] or '' }}" inputmode="decimal" maxlength="40" required></label>
+        <label>電流上限<input name="{{ prefix }}_current_max_value" value="{{ order['test_' ~ prefix ~ '_current_max_value'] or '' }}" inputmode="decimal" maxlength="40" required></label>
+        <label>柵格量<input name="{{ prefix }}_grid_value" value="{{ order['test_' ~ prefix ~ '_grid_value'] or '' }}" maxlength="80" required></label>
+      </div>
+    </section>
+    {% endfor %}
+    {% else %}
+    <div class="grid two">
+      <label>原點（未安裝可留白）<input name="origin_value" value="{{ order.test_origin_value or '' }}" maxlength="80"></label>
+      <label>背隙補正值<input name="backlash_correction_value" value="{{ order.test_backlash_value or '' }}" maxlength="80" required></label>
+      <label>電流下限<input name="current_min_value" value="{{ order.test_current_min_value or '' }}" inputmode="decimal" maxlength="40" required></label>
+      <label>電流上限<input name="current_max_value" value="{{ order.test_current_max_value or '' }}" inputmode="decimal" maxlength="40" required></label>
+      <label>柵格量<input name="grid_value" value="{{ order.test_grid_value or '' }}" maxlength="80" required></label>
+    </div>
+    {% endif %}
+    <div class="grid two">
+      <label>修改人<input name="operator_name" maxlength="80" required></label>
+      <label>管理密碼<input type="password" name="password" autocomplete="current-password" required></label>
+    </div>
+    <label>修改原因<input name="reason" maxlength="200" required></label>
+    <input type="hidden" name="next" value="{{ edit_next }}">
+    <button class="button danger">確認修正測試數值</button>
+  </form>
+</section>
+{% endif %}
 {% if order.status != 'cancelled' %}
 <section class="panel">
   <h2>訂單基本資料修正</h2>
@@ -153,7 +190,7 @@
 <section class="panel table-wrap">
   <h2>管理員修正紀錄</h2>
   <table class="correction-log"><tr><th>修改時間</th><th>動作</th><th>變更內容</th><th>修改人</th><th>原因</th></tr>
-    {% for correction in corrections %}<tr><td>{{ format_datetime(correction.created_at) }}</td><td>{{ {'manual_start':'補登 START','auto_complete_inspection_for_packing':'因包裝掃描自動完成校機','admin_correct_order_details':'訂單基本資料修正','admin_correct_order':'校機作業修正','admin_correct_operation_timeline':'校機時間軸修正','admin_correct_packing':'包裝作業修正','admin_add_pause':'補登暫停','admin_correct_pause':'修正暫停','cancel':'取消訂單'}.get(correction.action, correction.action) }}</td><td>{{ correction.changes_summary }}</td><td>{{ correction.operator_name }}</td><td>{{ correction.details_data.reason or '-' }}</td></tr>{% endfor %}
+    {% for correction in corrections %}<tr><td>{{ format_datetime(correction.created_at) }}</td><td>{{ {'manual_start':'補登 START','auto_complete_inspection_for_packing':'因包裝掃描自動完成校機','admin_correct_order_details':'訂單基本資料修正','admin_correct_test_results':'校機測試數值修正','admin_correct_order':'校機作業修正','admin_correct_operation_timeline':'校機時間軸修正','admin_correct_packing':'包裝作業修正','admin_add_pause':'補登暫停','admin_correct_pause':'修正暫停','cancel':'取消訂單'}.get(correction.action, correction.action) }}</td><td>{{ correction.changes_summary }}</td><td>{{ correction.operator_name }}</td><td>{{ correction.details_data.reason or '-' }}</td></tr>{% endfor %}
   </table>
 </section>
 {% endif %}

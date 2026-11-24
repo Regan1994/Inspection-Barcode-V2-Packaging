@@ -302,11 +302,26 @@ def test_manager_report_uses_the_same_requested_14_columns(client, app):
     assert '>清除</a>' in page
     assert 'href="/manager"' in page
 
+    with app.app_context():
+        get_db().execute(
+            """
+            UPDATE inspection_order
+            SET status='completed',test_origin_value='353',test_backlash_value='8',
+                test_current_min_value='44',test_current_max_value='46',test_grid_value='5104'
+            WHERE id=?
+            """,
+            (order_a,),
+        )
+        get_db().commit()
+
     detail_page = client.get(f"/manager?detail_id={order_a}&order_no=A001").get_data(as_text=True)
     assert "<h2>訂單明細：A001</h2>" in detail_page
     assert "基本資料" in detail_page
-    assert "時間與工時" not in detail_page
-    assert "缺料／人工暫停紀錄" not in detail_page
+    assert "馬達品牌" in detail_page
+    assert "時間與工時" in detail_page
+    assert "校機測試數值" in detail_page
+    assert "44-46" in detail_page
+    assert "缺料／人工暫停紀錄" in detail_page
     assert "<strong>校機建立日期：</strong>" not in detail_page
 
 

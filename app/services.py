@@ -2784,6 +2784,79 @@ def _require_admin_correction(password, reason, operator_name):
     return reason, operator_name
 
 
+def correct_order_test_results(
+    order_id, origin_value, backlash_value, current_min_value, current_max_value, grid_value,
+    rotary_origin_value, rotary_backlash_value, rotary_current_min_value, rotary_current_max_value, rotary_grid_value,
+    tilt_origin_value, tilt_backlash_value, tilt_current_min_value, tilt_current_max_value, tilt_grid_value,
+    reason, operator_name, password, backup_dir,
+):
+    """Correct completed inspection measurements with a backup and before/after audit trail."""
+    reason, operator_name = _require_admin_correction(password, reason, operator_name)
+    db = get_db()
+    order = get_order(order_id)
+    if not order:
+        raise ValueError("找不到訂單")
+    if order["status"] != "completed":
+        raise ValueError("只有已完成校機的訂單可以修正測試數值")
+
+    if str(order["axis_type_snapshot"] or "4") == "5":
+        rotary_min, rotary_max = _inspection_current_range(rotary_current_min_value, rotary_current_max_value, "旋轉軸")
+        tilt_min, tilt_max = _inspection_current_range(tilt_current_min_value, tilt_current_max_value, "傾斜軸")
+        new_values = {
+            "test_rotary_origin_value": _inspection_text(rotary_origin_value, "旋轉軸原點", required=False),
+            "test_rotary_backlash_value": _inspection_text(rotary_backlash_value, "旋轉軸背隙補正值"),
+            "test_rotary_current_min_value": rotary_min,
+            "test_rotary_current_max_value": rotary_max,
+            "test_rotary_grid_value": _inspection_text(rotary_grid_value, "旋轉軸柵格量"),
+            "test_tilt_origin_value": _inspection_text(tilt_origin_value, "傾斜軸原點", required=False),
+            "test_tilt_backlash_value": _inspection_text(tilt_backlash_value, "傾斜軸背隙補正值"),
+            "test_tilt_current_min_value": tilt_min,
+            "test_tilt_current_max_value": tilt_max,
+            "test_tilt_grid_value": _inspection_text(tilt_grid_value, "傾斜軸柵格量"),
+        }
+        new_values["rotary_motor_installed_by_us"] = int(bool(new_values["test_rotary_origin_value"]))
+        new_values["tilt_motor_installed_by_us"] = int(bool(new_values["test_tilt_origin_value"]))
+    else:
+        minimum, maximum = _inspection_current_range(current_min_value, current_max_value)
+        new_values = {
+            "test_origin_value": _inspection_text(origin_value, "原點", required=False),
+            "test_backlash_value": _inspection_text(backlash_value, "背隙補正值"),
+            "test_current_min_value": minimum,
+            "test_current_max_value": maximum,
+            "test_current_value": f"{minimum} - {maximum}",
+            "test_grid_value": _inspection_text(grid_value, "柵格量"),
+        }
+        new_values["motor_installed_by_us"] = int(bool(new_values["test_origin_value"]))
+
+    old_values = {key: order[key] for key in new_values}
+    if old_values == new_values:
+        raise ValueError("修正內容與目前測試數值相同")
+
+    backup = backup_database(backup_dir)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        current = db.execute("SELECT * FROM inspection_order WHERE id=?", (order_id,)).fetchone()
+        if not current or current["status"] != "completed":
+            raise ValueError("訂單資料已被其他操作更新，請重新開啟後再修正")
+        if {key: current[key] for key in old_values} != old_values:
+            raise ValueError("測試數值已被其他操作更新，請重新開啟後再修正")
+        assignments = ",".join(f"{key}=?" for key in new_values)
+        db.execute(
+            f"UPDATE inspection_order SET {assignments},updated_at=? WHERE id=?",
+            (*new_values.values(), utc_now(), order_id),
+        )
+        _inspection_audit(
+            "admin_correct_test_results", "inspection_order", order_id,
+            {"order_no": order["order_no"], "old": old_values, "new": new_values, "reason": reason, "backup": str(backup)},
+            operator_name,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return backup
+
+
 def _pause_table(pause_type):
     tables = {
         "material": "inspection_material_pause",
@@ -3435,6 +3508,21 @@ def _order_correction_changes_summary(details):
         "packing_started_at": "包裝開始時間",
         "packing_finished_at": "包裝結束時間",
         "packing_status": "包裝狀態",
+        "test_origin_value": "原點",
+        "test_backlash_value": "背隙補正值",
+        "test_current_min_value": "電流下限",
+        "test_current_max_value": "電流上限",
+        "test_grid_value": "柵格量",
+        "test_rotary_origin_value": "旋轉軸原點",
+        "test_rotary_backlash_value": "旋轉軸背隙補正值",
+        "test_rotary_current_min_value": "旋轉軸電流下限",
+        "test_rotary_current_max_value": "旋轉軸電流上限",
+        "test_rotary_grid_value": "旋轉軸柵格量",
+        "test_tilt_origin_value": "傾斜軸原點",
+        "test_tilt_backlash_value": "傾斜軸背隙補正值",
+        "test_tilt_current_min_value": "傾斜軸電流下限",
+        "test_tilt_current_max_value": "傾斜軸電流上限",
+        "test_tilt_grid_value": "傾斜軸柵格量",
     }
     ignored = {"model_id", "model_code_snapshot", "worker_id", "employee_no", "packing_worker_id", "packing_worker_no"}
 
