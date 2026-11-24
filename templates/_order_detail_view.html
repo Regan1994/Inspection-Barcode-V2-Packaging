@@ -28,15 +28,16 @@
       <div class="manager-detail-field"><span>校機人員</span><strong>{{ detail.worker_name_snapshot or '未認領' }}</strong></div>
       <div class="manager-detail-field"><span>目前狀態</span><strong>{% if detail.status == 'started' and detail.material_paused %}缺料暫停{% elif detail.status == 'started' and detail.manual_paused %}人工暫停{% else %}{{ status_label(detail.status) }}{% endif %}</strong></div>
       <div class="manager-detail-field"><span>包裝進度</span><strong>{{ packing_status_label(detail.packing_status) }}</strong></div>
+      {% if selected_blocks is not defined or 'packing_time' in selected_blocks %}
       <div class="manager-detail-field"><span>包裝人員</span><strong>{{ detail.packing_worker_name_snapshot or '-' }}</strong></div>
       <div class="manager-detail-field"><span>包裝開始</span><strong>{{ format_datetime(detail.packing_started_at) }}</strong></div>
       <div class="manager-detail-field"><span>包裝完成</span><strong>{{ format_datetime(detail.packing_finished_at) }}</strong></div>
+      {% endif %}
       <div class="manager-detail-field"><span>校機建立日期</span><strong>{{ format_date(detail.created_at) }}</strong></div>
-      {% if detail.reinspection_reason %}<div class="manager-detail-field manager-detail-field-wide"><span>重新檢驗原因</span><strong>{{ detail.reinspection_reason }}</strong></div>{% endif %}
     </div>
   </div>
 
-  <div class="manager-detail-section">
+  {% if selected_blocks is not defined or 'inspection_time' in selected_blocks %}<div class="manager-detail-section">
     <h3>時間與工時</h3>
     <div class="manager-detail-fields manager-detail-time-fields">
       <div class="manager-detail-field"><span>開始日期時間：</span><strong>{{ format_datetime(detail.started_at) }}</strong></div>
@@ -48,8 +49,8 @@
       <div><span>人工暫停時間</span><strong>{{ format_seconds(detail.manual_pause_seconds) }}</strong></div>
       <div class="manager-detail-metric-primary"><span>實際校機工時</span><strong>{{ format_work_duration(detail.started_at, detail.finished_at, detail_pause_intervals) }}</strong></div>
     </div>
-  </div>
-  {% if detail.status == 'completed' %}
+  </div>{% endif %}
+  {% if detail.status == 'completed' and (selected_blocks is not defined or 'inspection_values' in selected_blocks) %}
   <div class="manager-detail-section">
     <h3>校機測試數值</h3>
     {% if detail.axis_type_snapshot == '5' %}
@@ -60,7 +61,7 @@
           <div class="manager-detail-field"><span>本公司安裝馬達</span><strong>{{ '是' if detail.tilt_motor_installed_by_us else '否' }}</strong></div>
           <div class="manager-detail-field"><span>原點</span><strong>{{ detail.test_tilt_origin_value or '-' }}</strong></div>
           <div class="manager-detail-field"><span>背隙補正值</span><strong>{{ detail.test_tilt_backlash_value or '-' }}</strong></div>
-          <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_tilt_current_min_value or '-' }} ～ {{ detail.test_tilt_current_max_value or '-' }}</strong></div>
+          <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_tilt_current_min_value or '-' }}-{{ detail.test_tilt_current_max_value or '-' }}</strong></div>
           <div class="manager-detail-field"><span>柵格量</span><strong>{{ detail.test_tilt_grid_value or '-' }}</strong></div>
         </div>
       </section>
@@ -70,7 +71,7 @@
           <div class="manager-detail-field"><span>本公司安裝馬達</span><strong>{{ '是' if detail.rotary_motor_installed_by_us else '否' }}</strong></div>
           <div class="manager-detail-field"><span>原點</span><strong>{{ detail.test_rotary_origin_value or '-' }}</strong></div>
           <div class="manager-detail-field"><span>背隙補正值</span><strong>{{ detail.test_rotary_backlash_value or '-' }}</strong></div>
-          <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_rotary_current_min_value or '-' }} ～ {{ detail.test_rotary_current_max_value or '-' }}</strong></div>
+          <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_rotary_current_min_value or '-' }}-{{ detail.test_rotary_current_max_value or '-' }}</strong></div>
           <div class="manager-detail-field"><span>柵格量</span><strong>{{ detail.test_rotary_grid_value or '-' }}</strong></div>
         </div>
       </section>
@@ -80,7 +81,7 @@
       <div class="manager-detail-field"><span>本公司安裝馬達</span><strong>{{ '是' if detail.motor_installed_by_us else '否' }}</strong></div>
       <div class="manager-detail-field"><span>原點</span><strong>{{ detail.test_origin_value or '-' }}</strong></div>
       <div class="manager-detail-field"><span>背隙補正值</span><strong>{{ detail.test_backlash_value or '-' }}</strong></div>
-      <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_current_min_value or '-' }} ～ {{ detail.test_current_max_value or '-' }}</strong></div>
+      <div class="manager-detail-field"><span>電流值</span><strong>{{ detail.test_current_min_value or '-' }}-{{ detail.test_current_max_value or '-' }}</strong></div>
       <div class="manager-detail-field"><span>柵格量</span><strong>{{ detail.test_grid_value or '-' }}</strong></div>
     </div>
     {% endif %}
@@ -88,7 +89,7 @@
   {% endif %}
 </section>
 
-<section class="panel table-wrap manager-detail-pause-panel">
+{% if selected_blocks is not defined or 'inspection_time' in selected_blocks %}<section class="panel table-wrap manager-detail-pause-panel">
   <h2>缺料／人工暫停紀錄</h2>
   {% if material_pauses or manual_pauses %}
   <table>
@@ -117,4 +118,4 @@
   {% else %}
   <p class="empty">沒有缺料／停工紀錄。</p>
   {% endif %}
-</section>
+</section>{% endif %}

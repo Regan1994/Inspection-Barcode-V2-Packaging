@@ -10,7 +10,7 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 from .barcode import code128_svg
 from .db import get_db
 from .services import ASSEMBLY_STAGES, DEBUG_CLEAR_CHOICES, access_password_enabled, backup_database, change_access_password, clear_debug_data, correct_actual_qty, create_assembly_worker, create_batch, create_model, debug_clear_counts, delete_batch, delete_model, ensure_barcodes, export_xlsx, get_assembly_worker, get_batch, get_job, is_five_axis_model, list_assembly_workers, list_models, list_recent_batches, list_report_operators, parse_payload, query_report, restore_database, scan, set_access_password_enabled, set_assembly_worker_active, summarize_report_by_operator, update_model, verify_access_password
-from .services import create_packing_worker, delete_packing_worker, get_packing_worker, list_inspection_motor_specs, list_packing_workers, packing_scan, set_packing_worker_active, update_packing_worker
+from .services import create_packing_worker, delete_packing_worker, get_packing_worker, list_inspection_motor_specs, list_packing_workers, packing_scan, report_block_options, report_columns, selected_report_blocks, set_packing_worker_active, update_packing_worker
 
 bp = Blueprint("main", __name__)
 
@@ -238,6 +238,7 @@ def api_scan():
 @bp.route("/reports", methods=["GET", "POST"])
 def reports():
     filters = request.form.to_dict() if request.method == "POST" else request.args.to_dict()
+    selected_blocks = selected_report_blocks()
     rows = query_report(filters)
     return render_template("reports.html", rows=rows, summaries=summarize_report_by_operator(rows), filters=filters, operators=list_report_operators())
 
@@ -357,6 +358,7 @@ from .services import (
     correct_packing_timeline,
     correct_pause_record,
     create_inspection_worker,
+    create_inspection_motor_spec,
     create_model,
     create_order,
     debug_clear_counts,
@@ -377,8 +379,10 @@ from .services import (
     material_action_barcodes,
     pause_action_barcodes,
     query_report,
+    report_block_options,
     restore_database,
     scan,
+    selected_report_blocks,
     set_access_password_enabled,
     set_inspection_worker_active,
     status_label,
@@ -386,6 +390,9 @@ from .services import (
     summarize_report_by_worker,
     TAIPEI_TZ,
     delete_inspection_worker,
+    delete_inspection_motor_spec,
+    list_all_inspection_motor_specs,
+    update_inspection_motor_spec,
     update_inspection_worker,
     update_model,
     verify_access_password,
@@ -394,6 +401,7 @@ from .services import (
 bp = Blueprint("main", __name__)
 PROTECTED_ENDPOINTS = {
     "main.models", "main.model_update", "main.model_delete", "main.inspection_workers",
+    "main.inspection_motors", "main.inspection_motor_update", "main.inspection_motor_delete",
     "main.inspection_worker_status", "main.inspection_worker_update", "main.inspection_worker_delete", "main.worker_print", "main.orders_new", "main.orders",
     "main.order_edit", "main.order_print", "main.order_details_correct", "main.order_admin_correct", "main.order_operation_timeline_correct", "main.order_packing_correct", "main.order_pause_correct", "main.order_pause_add", "main.order_cancel", "main.order_delete", "main.order_packing_complete", "main.reports", "main.reports_export",
     "main.settings", "main.change_password", "main.password_mode", "main.debug_clear",
@@ -501,6 +509,41 @@ def model_delete(model_id):
     except (ValueError, OSError, sqlite3.Error) as exc:
         flash(f"沒有刪除機型：{exc}", "error")
     return redirect(url_for("main.models"))
+
+
+@bp.route("/inspection-motors", methods=["GET", "POST"])
+def inspection_motors():
+    if request.method == "POST":
+        try:
+            create_inspection_motor_spec(request.form.get("brand"), request.form.get("spec"))
+            flash("馬達已新增", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+    return render_template("inspection_motors.html", motors=list_all_inspection_motor_specs())
+
+
+@bp.post("/inspection-motors/<int:motor_id>/update")
+def inspection_motor_update(motor_id):
+    try:
+        update_inspection_motor_spec(
+            motor_id, request.form.get("brand"), request.form.get("spec"), request.form.get("is_active") == "1"
+        )
+        flash("馬達已更新", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.inspection_motors"))
+
+
+@bp.post("/inspection-motors/<int:motor_id>/delete")
+def inspection_motor_delete(motor_id):
+    try:
+        backup = delete_inspection_motor_spec(
+            motor_id, request.form.get("expected_spec", ""), current_app.config["BACKUP_DIRECTORY"]
+        )
+        flash(f"馬達已刪除；資料庫備份：{backup.name}", "success")
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        flash(f"沒有刪除馬達：{exc}", "error")
+    return redirect(url_for("main.inspection_motors"))
 
 
 @bp.route("/inspection-workers", methods=["GET", "POST"])
@@ -707,7 +750,6 @@ def order_details_correct(order_id):
             request.form.get("machine_serial"),
             request.form.get("customer_name"),
             request.form.get("expected_ship_date"),
-            request.form.get("reinspection_reason"),
             request.form.get("reason"),
             request.form.get("operator_name"),
             request.form.get("password"),
@@ -1059,6 +1101,7 @@ def scan_finish_results():
 @bp.route("/reports", methods=["GET", "POST"])
 def reports():
     filters = request.form.to_dict() if request.method == "POST" else request.args.to_dict()
+    selected_blocks = selected_report_blocks()
     try:
         current_page = max(1, int(filters.pop("page", "1") or 1))
     except ValueError:
@@ -1093,6 +1136,7 @@ def reports():
         axis_summaries=summarize_report_by_axis(axis_summary_rows),
         filters=filters,
         workers=list_report_workers(),
+        report_blocks=report_block_options(selected_blocks),
         delete_token=token,
         delete_next=request.full_path.rstrip("?"),
     )
@@ -1102,6 +1146,8 @@ def reports():
 def manager():
     """Read-only report entry for the business manager viewer."""
     filters = request.args.to_dict()
+    selected_blocks = selected_report_blocks(request.args.getlist("blocks"))
+    filters.pop("blocks", None)
     detail_id = (filters.pop("detail_id", "") or "").strip()
     raw_page = filters.pop("page", "1")
     try:
@@ -1118,12 +1164,14 @@ def manager():
             manual_pauses = list_manual_pauses(detail["id"])
 
     all_rows = query_report(filters)
+    columns = report_columns(selected_blocks)
     today = datetime.now(TAIPEI_TZ).date().isoformat()
     for row in all_rows:
         expected_ship_date = row.get("expected_ship_date") or ""
         has_open_status = row["status"] not in {"completed", "cancelled"}
         row["is_overdue"] = bool(expected_ship_date and expected_ship_date < today and has_open_status)
         row["is_due_today"] = bool(expected_ship_date == today and has_open_status)
+        row["report_values"] = {column["key"]: column["value"](row) for column in columns}
     total_rows = len(all_rows)
     total_pages = max(1, (total_rows + REPORT_PAGE_SIZE - 1) // REPORT_PAGE_SIZE)
     current_page = min(current_page, total_pages)
@@ -1135,13 +1183,16 @@ def manager():
         if pagination_items and page > pagination_items[-1] + 1:
             pagination_items.append(None)
         pagination_items.append(page)
-    query_args = {**filters, "page": current_page}
+    query_args = {**filters, "blocks": ",".join(selected_blocks[1:]), "page": current_page}
     return render_template(
         "manager.html",
         rows=rows,
         filters=filters,
         query_args=query_args,
         workers=list_report_workers(),
+        report_blocks=report_block_options(selected_blocks),
+        report_columns=columns,
+        selected_blocks=set(selected_blocks),
         total_rows=total_rows,
         current_page=current_page,
         total_pages=total_pages,
@@ -1159,12 +1210,14 @@ def manager():
 def manager_export():
     """Download all rows matching the manager viewer's current filters."""
     filters = request.args.to_dict()
+    selected_blocks = selected_report_blocks(request.args.getlist("blocks"))
+    filters.pop("blocks", None)
     filters.pop("detail_id", None)
     filters.pop("page", None)
     rows = query_report(filters)
     temporary = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     temporary.close()
-    export_xlsx(rows, temporary.name)
+    export_xlsx(rows, temporary.name, selected_blocks)
     filename = datetime.now().strftime("%Y%m%d") + "Report.xlsx"
     return send_file(temporary.name, as_attachment=True, download_name=filename)
 
@@ -1172,10 +1225,12 @@ def manager_export():
 @bp.post("/reports/export")
 def reports_export():
     filters = request.form.to_dict()
+    selected_blocks = selected_report_blocks(request.form.getlist("blocks"))
+    filters.pop("blocks", None)
     rows = query_report(filters)
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp.close()
-    export_xlsx(rows, tmp.name)
+    export_xlsx(rows, tmp.name, selected_blocks)
     filename = datetime.now().strftime("%Y%m%d") + "Report.xlsx"
     return send_file(tmp.name, as_attachment=True, download_name=filename)
 

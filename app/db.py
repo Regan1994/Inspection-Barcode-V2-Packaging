@@ -209,7 +209,6 @@ CREATE TABLE IF NOT EXISTS inspection_order (
     machine_serial TEXT NOT NULL,
     customer_name TEXT NOT NULL DEFAULT '',
     expected_ship_date TEXT,
-    reinspection_reason TEXT NOT NULL DEFAULT '',
     motor_brand TEXT NOT NULL DEFAULT '',
     motor_spec_snapshot TEXT NOT NULL DEFAULT '',
     rotary_motor_brand TEXT NOT NULL DEFAULT '',
@@ -450,6 +449,14 @@ def migrate_inspection_schema(db):
     db.execute("CREATE INDEX IF NOT EXISTS idx_inspection_order_packing_status ON inspection_order(packing_status)")
     db.execute("INSERT OR IGNORE INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (5, utc_now()))
     db.execute("INSERT OR IGNORE INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (6, utc_now()))
+    if db.execute("SELECT 1 FROM inspection_schema_migrations WHERE version=7").fetchone() is None:
+        db.execute("UPDATE inspection_model_master SET description='' WHERE description<>''")
+        db.execute("INSERT INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (7, utc_now()))
+    if db.execute("SELECT 1 FROM inspection_schema_migrations WHERE version=8").fetchone() is None:
+        order_columns = {row["name"] for row in db.execute("PRAGMA table_info(inspection_order)")}
+        if "reinspection_reason" in order_columns:
+            db.execute("ALTER TABLE inspection_order DROP COLUMN reinspection_reason")
+        db.execute("INSERT INTO inspection_schema_migrations(version, applied_at) VALUES (?, ?)", (8, utc_now()))
 
     db.executescript(SCHEMA)
     needs_batch_mode_migration = db.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone() is None

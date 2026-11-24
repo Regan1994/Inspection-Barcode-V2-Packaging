@@ -18,6 +18,7 @@ from app.services import (
     make_order_payload,
     make_pause_action_payload,
     query_report,
+    report_columns,
     scan,
     set_inspection_worker_active,
     summarize_report_by_axis,
@@ -145,6 +146,32 @@ def test_five_axis_order_details_display_and_correct_each_axis_motor(client, app
         assert order["rotary_motor_spec_snapshot"] == "α12iF A06B-0243-B100"
 
 
+def test_motor_management_can_create_update_stop_and_delete_entries(client, app):
+    page = client.get("/inspection-motors").get_data(as_text=True)
+    assert "馬達管理" in page
+    assert "HG-104S-D48" in page
+
+    response = client.post("/inspection-motors", data={"brand": "測試品牌", "spec": "TEST-MOTOR-01"})
+    assert response.status_code == 200
+    with app.app_context():
+        motor = get_db().execute("SELECT * FROM inspection_motor_spec WHERE spec=?", ("TEST-MOTOR-01",)).fetchone()
+        motor_id = motor["id"]
+
+    response = client.post(
+        f"/inspection-motors/{motor_id}/update",
+        data={"brand": "更新品牌", "spec": "TEST-MOTOR-02", "is_active": "0"},
+    )
+    assert response.status_code == 302
+    with app.app_context():
+        motor = get_db().execute("SELECT * FROM inspection_motor_spec WHERE id=?", (motor_id,)).fetchone()
+        assert (motor["brand"], motor["spec"], motor["is_active"]) == ("更新品牌", "TEST-MOTOR-02", 0)
+
+    response = client.post(f"/inspection-motors/{motor_id}/delete", data={"expected_spec": "TEST-MOTOR-02"})
+    assert response.status_code == 302
+    with app.app_context():
+        assert get_db().execute("SELECT 1 FROM inspection_motor_spec WHERE id=?", (motor_id,)).fetchone() is None
+
+
 def test_order_form_requires_an_axis_selection(client, app):
     response = client.post(
         "/orders/new",
@@ -253,6 +280,10 @@ def test_manager_report_uses_the_same_requested_14_columns(client, app):
 
     assert "<h2>訂單查詢結果</h2>" in page
     expected_headers = [
+        "訂單號碼", "校機建立日期", "預計出貨日", "機型", "軸別", "機台製號", "客戶",
+        "校機狀態", "校機人員", "包裝進度", "操作",
+    ]
+    legacy_expected_headers = [
         "訂單號碼", "校機建立日期", "預計出貨日", "機型", "機台製號", "客戶",
         "校機狀態", "校機人員", "開始日期", "結束日期", "總時間", "實際工時",
         "包裝進度", "操作",
@@ -274,8 +305,8 @@ def test_manager_report_uses_the_same_requested_14_columns(client, app):
     detail_page = client.get(f"/manager?detail_id={order_a}&order_no=A001").get_data(as_text=True)
     assert "<h2>訂單明細：A001</h2>" in detail_page
     assert "基本資料" in detail_page
-    assert "時間與工時" in detail_page
-    assert "缺料／人工暫停紀錄" in detail_page
+    assert "時間與工時" not in detail_page
+    assert "缺料／人工暫停紀錄" not in detail_page
     assert "<strong>校機建立日期：</strong>" not in detail_page
 
 
@@ -347,13 +378,45 @@ def test_manager_export_reuses_the_full_main_system_excel(client, app):
     assert [cell.value for cell in summary[5]] == ["四軸", "HR-255", 2, None]
     assert [cell.value for cell in summary[6]] == ["四軸小計", None, 2, None]
     sheet = workbook["訂單明細"]
-    assert [cell.value for cell in sheet[1]] == [
-        "訂單號碼", "機型", "軸別", "機台製號", "客戶", "校機建立時間", "預計出貨日期", "校機狀態", "校機人員", "開始日期", "開始時間", "結束日期", "結束時間",
-        "缺料時間", "人工暫停時間", "實際校機時間", "重檢原因", None, "包裝進度", "包裝人員", "包裝開始日期", "包裝開始時間", "包裝結束日期", "包裝結束時間",
-    ]
+    assert [cell.value for cell in sheet[1]] == [column["label"] for column in report_columns(("basic",))]
     assert [sheet.cell(row=index, column=1).value for index in range(2, 4)] == ["A002", "A001"]
     assert sheet.max_row == 3
     assert order_a and order_b
+
+
+def test_manager_report_and_excel_share_selected_data_blocks(client, app):
+    _, _, _, order_a, _ = setup_data(app)
+
+    basic_page = client.get("/manager?order_no=A001").get_data(as_text=True)
+    assert 'name="blocks" value="inspection_time"' in basic_page
+    assert "校機開始</th>" not in basic_page
+    assert "包裝人員</th>" not in basic_page
+    assert f"detail_id={order_a}" in basic_page
+
+    selected = "blocks=inspection_time&blocks=packing_time&blocks=inspection_values"
+    selected_page = client.get(f"/manager?order_no=A001&{selected}").get_data(as_text=True)
+    for heading in ("校機開始", "包裝人員", "四軸原點", "傾斜軸原點", "旋轉軸原點"):
+        assert f"<th>{heading}</th>" in selected_page
+    assert "inspection_time,packing_time,inspection_values" in selected_page
+
+    from openpyxl import load_workbook
+
+    basic_export = client.get("/manager/export?order_no=A001")
+    basic_headers = [cell.value for cell in load_workbook(BytesIO(basic_export.data), data_only=True)["訂單明細"][1]]
+    assert "校機開始" not in basic_headers
+    assert "包裝人員" not in basic_headers
+
+    selected_export = client.get(f"/manager/export?order_no=A001&{selected}")
+    selected_headers = [cell.value for cell in load_workbook(BytesIO(selected_export.data), data_only=True)["訂單明細"][1]]
+    for heading in ("校機開始", "包裝人員", "四軸原點", "傾斜軸原點", "旋轉軸原點"):
+        assert heading in selected_headers
+
+    report_page = client.get("/reports").get_data(as_text=True)
+    assert "Excel 資料區塊" in report_page
+    report_export = client.post("/reports/export", data={"blocks": ["packing_time"]})
+    report_headers = [cell.value for cell in load_workbook(BytesIO(report_export.data), data_only=True)["訂單明細"][1]]
+    assert "包裝人員" in report_headers
+    assert "校機開始" not in report_headers
 
 
 def test_excel_export_creates_a_person_sheet_per_worker_and_excludes_cancelled_rows(app, tmp_path):
@@ -679,7 +742,7 @@ def test_scanned_worker_can_be_replaced_or_cleared(client, app):
     assert "固定缺料條碼 → 該訂單 START" in page
     assert "固定補料條碼 → 該訂單 START" in page
     assert "固定暫停條碼 → 該訂單 START" in page
-    assert '<div class="home-version" aria-label="系統版本">V801.11.10</div>' in client.get("/inspection").get_data(as_text=True)
+    assert '<div class="home-version" aria-label="系統版本">Update1-Excel-1123</div>' in client.get("/inspection").get_data(as_text=True)
 
 
 def test_scan_accepts_scanner_prefix_and_existing_legacy_barcodes(client, app):
@@ -981,10 +1044,11 @@ def test_same_machine_history_report_and_excel(client, app, tmp_path):
         from openpyxl import load_workbook
         workbook = load_workbook(output, read_only=True)
         detail = workbook["訂單明細"]
-        assert [cell.value for cell in detail[1]] == ["訂單號碼", "機型", "軸別", "機台製號", "客戶", "校機建立時間", "預計出貨日期", "校機狀態", "校機人員", "開始日期", "開始時間", "結束日期", "結束時間", "缺料時間", "人工暫停時間", "實際校機時間", "重檢原因", None, "包裝進度", "包裝人員", "包裝開始日期", "包裝開始時間", "包裝結束日期", "包裝結束時間"]
-        assert "員工編號" not in [cell.value for cell in detail[1]]
+        assert [cell.value for cell in detail[1]] == [column["label"] for column in report_columns(("basic", "inspection_time", "packing_time", "inspection_values"))]
+        headers = [cell.value for cell in detail[1]]
         exported_rows = {values[0]: values for values in detail.iter_rows(min_row=2, values_only=True)}
-        assert exported_rows["A001"][9:13] == ("2026-10-28", "09:02:03", "2026-10-28", "12:05:06")
+        assert exported_rows["A001"][headers.index("校機開始")] == "2026-10-28 09:02:03"
+        assert exported_rows["A001"][headers.index("校機結束")] == "2026-10-28 12:05:06"
     response = client.post("/reports/export", data={"machine_serial": "E27-01"})
     assert response.status_code == 200
     assert response.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1001,7 +1065,7 @@ def test_excel_export_treats_user_text_as_text(app, tmp_path):
 
     from openpyxl import load_workbook
     workbook = load_workbook(output, data_only=False)
-    assert workbook["訂單明細"]["E2"].value == "'=1+1"
+    assert any(cell.value == "'=1+1" for cell in workbook["訂單明細"][2])
 
 
 def test_backup_is_verified(app, tmp_path):

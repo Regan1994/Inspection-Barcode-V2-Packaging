@@ -19,6 +19,7 @@ Write-Host "Building Inspection Reporting onedir package..."
 & $pythonPath -m PyInstaller `
     --noconfirm `
     --clean `
+    --windowed `
     --onedir `
     --name InspectionReporting `
     --contents-directory . `

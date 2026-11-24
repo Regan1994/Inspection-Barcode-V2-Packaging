@@ -34,6 +34,7 @@
           <label>校機人員<select name="worker_name"><option value="">全部</option>{% for worker in workers %}<option value="{{ worker.name }}" {% if filters.get('worker_name') == worker.name %}selected{% endif %}>{{ worker.name }}（{{ worker.employee_no }}）</option>{% endfor %}</select></label>
           <label>狀態<select name="status_group"><option value="">全部</option><option value="pending" {% if filters.get('status_group') == 'pending' %}selected{% endif %}>待校機</option><option value="started" {% if filters.get('status_group') == 'started' %}selected{% endif %}>校機中</option><option value="material_paused" {% if filters.get('status_group') == 'material_paused' %}selected{% endif %}>缺料暫停</option><option value="manual_paused" {% if filters.get('status_group') == 'manual_paused' %}selected{% endif %}>人工暫停</option><option value="packing_started" {% if filters.get('status_group') == 'packing_started' %}selected{% endif %}>包裝中</option><option value="packing_completed" {% if filters.get('status_group') == 'packing_completed' %}selected{% endif %}>已包裝完成</option><option value="completed" {% if filters.get('status_group') == 'completed' %}selected{% endif %}>已完成</option><option value="cancelled" {% if filters.get('status_group') == 'cancelled' %}selected{% endif %}>已取消</option><option value="incomplete" {% if filters.get('status_group') == 'incomplete' %}selected{% endif %}>未完成</option></select></label>
           <label>排序<select name="sort_by"><option value="created_desc" {% if filters.get('sort_by', 'created_desc') == 'created_desc' %}selected{% endif %}>校機建立日期：新到舊</option><option value="order_no_desc" {% if filters.get('sort_by') == 'order_no_desc' %}selected{% endif %}>訂單號碼：大到小</option><option value="expected_ship_date_asc" {% if filters.get('sort_by') == 'expected_ship_date_asc' %}selected{% endif %}>預計出貨日：近到遠</option><option value="expected_ship_date_desc" {% if filters.get('sort_by') == 'expected_ship_date_desc' %}selected{% endif %}>預計出貨日：遠到近</option></select></label>
+          <fieldset class="report-block-selector"><legend>匯出／顯示資料區塊</legend>{% for block in report_blocks %}<label><input type="checkbox" name="blocks" value="{{ block.key }}"{% if block.selected %} checked{% endif %}{% if block.fixed %} disabled{% endif %}> {{ block.label }}{% if block.fixed %}（固定）{% endif %}</label>{% endfor %}<button class="button small" type="button" data-select-all-blocks>全選</button><button class="button small" type="button" data-clear-all-blocks>清除</button></fieldset>
           <button class="button manager-filter-download" type="submit" formaction="{{ url_for('main.manager_export') }}" formmethod="get">下載 Excel</button>
         </div>
         <div class="manager-filter-actions">
@@ -47,26 +48,14 @@
       <h2>訂單查詢結果</h2>
       <p class="muted">共 {{ total_rows }} 筆訂單；每頁 25 台，目前第 {{ current_page }}／{{ total_pages }} 頁。下載 Excel 會包含目前篩選條件下的全部結果。</p>
       <table class="report-detail-table manager-report-table">
-        <tr><th>訂單號碼</th><th>校機建立日期</th><th>預計出貨日</th><th>機型</th><th>機台製號</th><th>客戶</th><th>校機狀態</th><th>校機人員</th><th>開始日期</th><th>結束日期</th><th>總時間</th><th>實際工時</th><th>包裝進度</th><th>操作</th></tr>
+        <tr>{% for column in report_columns %}<th>{{ column.label }}</th>{% endfor %}<th>操作</th></tr>
         {% for row in rows %}
         <tr{% if row.is_overdue %} class="manager-row-overdue"{% elif row.is_due_today %} class="manager-row-due-today"{% endif %}>
-          <td>{{ row.order_no }}{% if row.is_overdue %}<small class="manager-deadline-label overdue">已逾期</small>{% elif row.is_due_today %}<small class="manager-deadline-label due-today">今日到期</small>{% endif %}</td>
-          <td>{{ format_date(row.created_at) }}</td>
-          <td>{{ row.expected_ship_date or '-' }}</td>
-          <td>{{ row.model_name_snapshot }}</td>
-          <td>{{ row.machine_serial }}</td>
-          <td>{{ row.customer_name or '-' }}</td>
-          <td>{% if row.status == 'started' and row.material_paused %}缺料暫停{% elif row.status == 'started' and row.manual_paused %}人工暫停{% else %}{{ status_label(row.status) }}{% endif %}</td>
-          <td>{{ row.worker_name_snapshot or '未認領' }}</td>
-          <td>{{ format_date(row.started_at) }}</td>
-          <td>{{ format_date(row.finished_at) }}</td>
-          <td>{{ format_duration(row.started_at, row.finished_at, row.status) }}</td>
-          <td>{{ format_work_duration(row.started_at, row.finished_at, row.pause_intervals) }}</td>
-          <td>{{ packing_status_label(row.packing_status) }}</td>
+          {% for column in report_columns %}<td>{{ row.report_values[column.key] }}{% if column.key == 'order_no' and row.is_overdue %}<small class="manager-deadline-label overdue">已逾期</small>{% elif column.key == 'order_no' and row.is_due_today %}<small class="manager-deadline-label due-today">今日到期</small>{% endif %}</td>{% endfor %}
           <td><a class="button small" href="{{ url_for('main.manager', detail_id=row.id, **query_args) }}">查看明細</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="14" class="empty">沒有符合條件的訂單。</td></tr>
+        <tr><td colspan="{{ report_columns|length + 1 }}" class="empty">沒有符合條件的訂單。</td></tr>
         {% endfor %}
       </table>
       {% if total_pages > 1 %}
@@ -82,5 +71,13 @@
       {% endif %}
     </section>
   </main>
+  <script>
+    document.querySelectorAll('[data-select-all-blocks], [data-clear-all-blocks]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        const selected = button.hasAttribute('data-select-all-blocks');
+        document.querySelectorAll('input[name="blocks"]:not([disabled])').forEach(function (input) { input.checked = selected; });
+      });
+    });
+  </script>
 </body>
 </html>

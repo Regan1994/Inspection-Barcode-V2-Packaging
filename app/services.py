@@ -768,7 +768,7 @@ def summarize_report_by_operator(rows):
     return sorted(result, key=lambda item: (-item["assembly_quantity"], item["operator_name"].casefold()))
 
 
-def export_xlsx(rows, path):
+def export_xlsx(rows, path, selected_blocks=None):
     from copy import copy
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
@@ -1072,6 +1072,105 @@ def format_date(value):
 def format_time(value):
     formatted = format_datetime(value)
     return formatted.split(" ", 1)[1] if " " in formatted else "-"
+
+
+# The reader table and the Excel detail sheet deliberately share this one
+# business-oriented block/column definition.
+REPORT_BLOCKS = (
+    ("basic", "基本資料", True),
+    ("inspection_time", "校機時間", False),
+    ("packing_time", "包裝時間", False),
+    ("inspection_values", "校機數值", False),
+)
+
+
+def selected_report_blocks(value=None):
+    """Return valid report blocks, always including the fixed basic block."""
+    if isinstance(value, str):
+        requested = {item.strip() for item in value.split(",") if item.strip()}
+    elif value:
+        requested = {str(item).strip() for item in value if str(item).strip()}
+    else:
+        requested = set()
+    valid = {key for key, _label, _fixed in REPORT_BLOCKS}
+    return tuple(key for key, _label, _fixed in REPORT_BLOCKS if key == "basic" or key in requested & valid)
+
+
+def report_block_options(selected_blocks):
+    selected = set(selected_blocks)
+    return [
+        {"key": key, "label": label, "fixed": fixed, "selected": key in selected}
+        for key, label, fixed in REPORT_BLOCKS
+    ]
+
+
+def report_columns(selected_blocks):
+    """Return displayed columns and their values for reader and Excel alike."""
+    selected = set(selected_report_blocks(selected_blocks))
+
+    def displayed_status(row):
+        if row.get("material_paused"):
+            return "缺料暫停"
+        if row.get("manual_paused"):
+            return "人工暫停"
+        return status_label(row.get("status"))
+
+    def value_or_blank(row, name):
+        return row.get(name) or ""
+
+    def range_value(row, low, high):
+        return f"{row.get(low) or '-'}-{row.get(high) or '-'}"
+
+    columns = {
+        "basic": [
+            ("order_no", "訂單號碼", lambda row: value_or_blank(row, "order_no")),
+            ("created_at", "校機建立日期", lambda row: format_date(row.get("created_at"))),
+            ("expected_ship_date", "預計出貨日", lambda row: value_or_blank(row, "expected_ship_date")),
+            ("model_name", "機型", lambda row: value_or_blank(row, "model_name_snapshot")),
+            ("axis_type", "軸別", lambda row: axis_type_label(row.get("axis_type_snapshot"))),
+            ("machine_serial", "機台製號", lambda row: value_or_blank(row, "machine_serial")),
+            ("customer_name", "客戶", lambda row: value_or_blank(row, "customer_name")),
+            ("inspection_status", "校機狀態", displayed_status),
+            ("worker_name", "校機人員", lambda row: row.get("worker_name_snapshot") or "未認領"),
+            ("packing_status", "包裝進度", lambda row: packing_status_label(row.get("packing_status"))),
+        ],
+        "inspection_time": [
+            ("inspection_started", "校機開始", lambda row: format_datetime(row.get("started_at"))),
+            ("inspection_finished", "校機結束", lambda row: format_datetime(row.get("finished_at"))),
+            ("inspection_elapsed", "校機總經過時間", lambda row: format_duration(row.get("started_at"), row.get("finished_at"), row.get("status"))),
+            ("inspection_work", "實際校機工時", lambda row: format_work_duration(row.get("started_at"), row.get("finished_at"), row.get("pause_intervals"))),
+            ("material_pause", "缺料時間", lambda row: format_seconds(row.get("material_pause_seconds"))),
+            ("manual_pause", "人工暫停時間", lambda row: format_seconds(row.get("manual_pause_seconds"))),
+        ],
+        "packing_time": [
+            ("packing_worker", "包裝人員", lambda row: value_or_blank(row, "packing_worker_name_snapshot")),
+            ("packing_started", "包裝開始", lambda row: format_datetime(row.get("packing_started_at"))),
+            ("packing_finished", "包裝完成", lambda row: format_datetime(row.get("packing_finished_at"))),
+            ("packing_work", "包裝工時", lambda row: format_work_duration(row.get("packing_started_at"), row.get("packing_finished_at"))),
+        ],
+        "inspection_values": [
+            ("four_installed", "四軸本公司安裝馬達", lambda row: "是" if row.get("motor_installed_by_us") else "否"),
+            ("four_origin", "四軸原點", lambda row: value_or_blank(row, "test_origin_value")),
+            ("four_backlash", "四軸背隙補正值", lambda row: value_or_blank(row, "test_backlash_value")),
+            ("four_current", "四軸電流值", lambda row: range_value(row, "test_current_min_value", "test_current_max_value")),
+            ("four_grid", "四軸柵格量", lambda row: value_or_blank(row, "test_grid_value")),
+            ("tilt_installed", "傾斜軸本公司安裝馬達", lambda row: "是" if row.get("tilt_motor_installed_by_us") else "否"),
+            ("tilt_origin", "傾斜軸原點", lambda row: value_or_blank(row, "test_tilt_origin_value")),
+            ("tilt_backlash", "傾斜軸背隙補正值", lambda row: value_or_blank(row, "test_tilt_backlash_value")),
+            ("tilt_current", "傾斜軸電流值", lambda row: range_value(row, "test_tilt_current_min_value", "test_tilt_current_max_value")),
+            ("tilt_grid", "傾斜軸柵格量", lambda row: value_or_blank(row, "test_tilt_grid_value")),
+            ("rotary_installed", "旋轉軸本公司安裝馬達", lambda row: "是" if row.get("rotary_motor_installed_by_us") else "否"),
+            ("rotary_origin", "旋轉軸原點", lambda row: value_or_blank(row, "test_rotary_origin_value")),
+            ("rotary_backlash", "旋轉軸背隙補正值", lambda row: value_or_blank(row, "test_rotary_backlash_value")),
+            ("rotary_current", "旋轉軸電流值", lambda row: range_value(row, "test_rotary_current_min_value", "test_rotary_current_max_value")),
+            ("rotary_grid", "旋轉軸柵格量", lambda row: value_or_blank(row, "test_rotary_grid_value")),
+        ],
+    }
+    return [
+        {"key": key, "label": label, "value": value}
+        for block, _label, _fixed in REPORT_BLOCKS if block in selected
+        for key, label, value in columns[block]
+    ]
 
 
 def _inspection_text(value, field, required=True):
@@ -1418,11 +1517,10 @@ def delete_packing_worker(worker_id, expected_employee_no, confirmation, backup_
     return backup
 
 
-def create_order(order_no, model_id=None, machine_serial=None, customer_name="", expected_ship_date="", reinspection_reason="", motor_brand="", motor_spec_snapshot="", rotary_motor_brand="", rotary_motor_spec_snapshot="", tilt_motor_brand="", tilt_motor_spec_snapshot="", created_by="admin", model_name=None, axis_type=None):
+def create_order(order_no, model_id=None, machine_serial=None, customer_name="", expected_ship_date="", motor_brand="", motor_spec_snapshot="", rotary_motor_brand="", rotary_motor_spec_snapshot="", tilt_motor_brand="", tilt_motor_spec_snapshot="", created_by="admin", model_name=None, axis_type=None):
     order_no = _inspection_code(order_no, "訂單號碼")
     machine_serial = _inspection_code(machine_serial, "機台製號")
     customer_name = _inspection_text(customer_name, "客戶名稱", required=False)
-    reinspection_reason = _inspection_text(reinspection_reason, "重新檢驗原因", required=False)
     motor_brand = _inspection_text(motor_brand, "馬達品牌", required=False)
     motor_spec_snapshot = _inspection_text(motor_spec_snapshot, "馬達型號", required=False)
     rotary_motor_brand = _inspection_text(rotary_motor_brand, "旋轉軸馬達品牌", required=False)
@@ -1459,7 +1557,7 @@ def create_order(order_no, model_id=None, machine_serial=None, customer_name="",
     now = utc_now()
     order_axis_type = axis_type or _infer_inspection_axis_type(model["model_name"], machine_serial)
     try:
-        cur = db.execute("INSERT INTO inspection_order(order_no,model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (order_no, model_id, model["model_name"], model["model_code"], order_axis_type, machine_serial, customer_name, expected_ship_date, reinspection_reason, motor_brand, motor_spec_snapshot, rotary_motor_brand, rotary_motor_spec_snapshot, tilt_motor_brand, tilt_motor_spec_snapshot, now, now))
+        cur = db.execute("INSERT INTO inspection_order(order_no,model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (order_no, model_id, model["model_name"], model["model_code"], order_axis_type, machine_serial, customer_name, expected_ship_date, motor_brand, motor_spec_snapshot, rotary_motor_brand, rotary_motor_spec_snapshot, tilt_motor_brand, tilt_motor_spec_snapshot, now, now))
     except sqlite3.IntegrityError as exc:
         if "inspection_order.order_no" in str(exc):
             raise ValueError("訂單號碼已存在") from exc
@@ -1526,7 +1624,6 @@ def correct_order_details(
     machine_serial,
     customer_name,
     expected_ship_date,
-    reinspection_reason,
     reason,
     operator_name,
     password,
@@ -1560,7 +1657,6 @@ def correct_order_details(
         raise ValueError("找不到訂單")
     if order["status"] == "cancelled":
         raise ValueError("已取消訂單不能修改基本資料")
-    reinspection_reason = order["reinspection_reason"] if reinspection_reason is None else _inspection_text(reinspection_reason, "重新檢驗原因", required=False)
     motor_brand = order["motor_brand"] if motor_brand is None else _inspection_text(motor_brand, "馬達品牌", required=False)
     motor_spec_snapshot = order["motor_spec_snapshot"] if motor_spec_snapshot is None else _inspection_text(motor_spec_snapshot, "馬達型號", required=False)
     rotary_motor_brand = order["rotary_motor_brand"] if rotary_motor_brand is None else _inspection_text(rotary_motor_brand, "旋轉軸馬達品牌", required=False)
@@ -1581,7 +1677,6 @@ def correct_order_details(
         "machine_serial",
         "customer_name",
         "expected_ship_date",
-        "reinspection_reason",
         "motor_brand",
         "motor_spec_snapshot",
         "rotary_motor_brand",
@@ -1598,7 +1693,6 @@ def correct_order_details(
         "machine_serial": machine_serial,
         "customer_name": customer_name,
         "expected_ship_date": expected_ship_date,
-        "reinspection_reason": reinspection_reason,
         "motor_brand": motor_brand,
         "motor_spec_snapshot": motor_spec_snapshot,
         "rotary_motor_brand": rotary_motor_brand,
@@ -1613,7 +1707,7 @@ def correct_order_details(
     try:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute(
-            "SELECT model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,reinspection_reason,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,status FROM inspection_order WHERE id=?",
+            "SELECT model_id,model_name_snapshot,model_code_snapshot,axis_type_snapshot,machine_serial,customer_name,expected_ship_date,motor_brand,motor_spec_snapshot,rotary_motor_brand,rotary_motor_spec_snapshot,tilt_motor_brand,tilt_motor_spec_snapshot,status FROM inspection_order WHERE id=?",
             (order_id,),
         ).fetchone()
         if not current or current["status"] == "cancelled":
@@ -1624,14 +1718,14 @@ def correct_order_details(
             """
             UPDATE inspection_order
             SET model_id=?,model_name_snapshot=?,model_code_snapshot=?,axis_type_snapshot=?,
-                machine_serial=?,customer_name=?,expected_ship_date=?,reinspection_reason=?,motor_brand=?,motor_spec_snapshot=?,
+                machine_serial=?,customer_name=?,expected_ship_date=?,motor_brand=?,motor_spec_snapshot=?,
                 rotary_motor_brand=?,rotary_motor_spec_snapshot=?,tilt_motor_brand=?,tilt_motor_spec_snapshot=?,updated_at=?
             WHERE id=?
             """,
             (
                 new_values["model_id"], new_values["model_name_snapshot"], new_values["model_code_snapshot"],
                 new_values["axis_type_snapshot"], new_values["machine_serial"], new_values["customer_name"],
-                new_values["expected_ship_date"], new_values["reinspection_reason"], new_values["motor_brand"], new_values["motor_spec_snapshot"],
+                new_values["expected_ship_date"], new_values["motor_brand"], new_values["motor_spec_snapshot"],
                 new_values["rotary_motor_brand"], new_values["rotary_motor_spec_snapshot"], new_values["tilt_motor_brand"], new_values["tilt_motor_spec_snapshot"], utc_now(), order_id,
             ),
         )
@@ -2136,6 +2230,66 @@ def list_inspection_motor_specs():
     return [dict(row) for row in get_db().execute(
         "SELECT brand,spec FROM inspection_motor_spec WHERE is_active=1 ORDER BY brand COLLATE NOCASE,spec COLLATE NOCASE"
     ).fetchall()]
+
+
+def list_all_inspection_motor_specs():
+    """Return every motor entry for administration, including stopped entries."""
+    return get_db().execute(
+        "SELECT * FROM inspection_motor_spec ORDER BY brand COLLATE NOCASE,spec COLLATE NOCASE"
+    ).fetchall()
+
+
+def create_inspection_motor_spec(brand, spec, changed_by="admin"):
+    brand = _inspection_text(brand, "馬達品牌")
+    spec = _inspection_text(spec, "馬達型號")
+    db = get_db()
+    try:
+        cur = db.execute(
+            "INSERT INTO inspection_motor_spec(brand,spec,is_active,created_at,updated_at) VALUES (?,?,?,?,?)",
+            (brand, spec, 1, utc_now(), utc_now()),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("馬達型號已存在") from exc
+    _inspection_audit("create", "inspection_motor_spec", cur.lastrowid, {"brand": brand, "spec": spec}, changed_by)
+    db.commit()
+    return cur.lastrowid
+
+
+def update_inspection_motor_spec(motor_id, brand, spec, is_active, changed_by="admin"):
+    brand = _inspection_text(brand, "馬達品牌")
+    spec = _inspection_text(spec, "馬達型號")
+    db = get_db()
+    motor = db.execute("SELECT * FROM inspection_motor_spec WHERE id=?", (motor_id,)).fetchone()
+    if not motor:
+        raise ValueError("找不到馬達")
+    try:
+        db.execute(
+            "UPDATE inspection_motor_spec SET brand=?,spec=?,is_active=?,updated_at=? WHERE id=?",
+            (brand, spec, int(bool(is_active)), utc_now(), motor_id),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("馬達型號已存在") from exc
+    _inspection_audit(
+        "update", "inspection_motor_spec", motor_id,
+        {"old_brand": motor["brand"], "old_spec": motor["spec"], "brand": brand, "spec": spec, "is_active": bool(is_active)},
+        changed_by,
+    )
+    db.commit()
+
+
+def delete_inspection_motor_spec(motor_id, expected_spec, backup_dir, changed_by="admin"):
+    db = get_db()
+    motor = db.execute("SELECT * FROM inspection_motor_spec WHERE id=?", (motor_id,)).fetchone()
+    if not motor or motor["spec"] != (expected_spec or "").strip():
+        raise ValueError("馬達不存在或型號已變更")
+    backup = backup_database(backup_dir)
+    db.execute("DELETE FROM inspection_motor_spec WHERE id=?", (motor_id,))
+    _inspection_audit(
+        "delete", "inspection_motor_spec", motor_id,
+        {"brand": motor["brand"], "spec": motor["spec"], "backup": str(backup)}, changed_by,
+    )
+    db.commit()
+    return backup
 
 
 def remember_inspection_motor_specs(*specs):
@@ -3273,7 +3427,6 @@ def _order_correction_changes_summary(details):
         "machine_serial": "機台製號",
         "customer_name": "客戶",
         "expected_ship_date": "預計出貨日",
-        "reinspection_reason": "重新檢驗原因",
         "worker_name": "校機人員",
         "started_at": "校機開始時間",
         "finished_at": "校機結束時間",
@@ -3505,7 +3658,7 @@ def summarize_report_by_axis(rows):
     return [summary.get(axis_type, {"axis_type": axis_type, "axis_label": axis_type_label(axis_type), "total": 0, "completed": 0, "started": 0, "material_paused": 0, "manual_paused": 0, "pending": 0, "cancelled": 0}) for axis_type in ("4", "5")]
 
 
-def export_xlsx(rows, path):
+def export_xlsx(rows, path, selected_blocks=None):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
@@ -3555,14 +3708,17 @@ def export_xlsx(rows, path):
                 cell.fill = axis_fills[axis_type]
         sheet.freeze_panes = "A5"
 
-    headers = ["訂單號碼", "機型", "軸別", "機台製號", "客戶", "校機建立時間", "預計出貨日期", "校機狀態", "校機人員", "開始日期", "開始時間", "結束日期", "結束時間", "缺料時間", "人工暫停時間", "實際校機時間", "重檢原因", None, "包裝進度", "包裝人員", "包裝開始日期", "包裝開始時間", "包裝結束日期", "包裝結束時間"]
-    detail.append(headers)
+    # Direct service callers retain the historical full export. The reader
+    # always supplies an explicit block selection.
+    if selected_blocks is None:
+        selected_blocks = ("basic", "inspection_time", "packing_time", "inspection_values")
+    columns = report_columns(selected_blocks)
+    detail.append([column["label"] for column in columns])
     for cell in detail[1]:
         cell.font = Font(bold=True)
 
     for row in rows:
-        displayed_status = "缺料暫停" if row["material_paused"] else ("人工暫停" if row["manual_paused"] else status_label(row["status"]))
-        detail.append([excel_value(value) for value in [row["order_no"], row["model_name_snapshot"], axis_type_label(row["axis_type_snapshot"]), row["machine_serial"], row["customer_name"], format_date(row["created_at"]), row["expected_ship_date"] or "", displayed_status, row["worker_name_snapshot"] or "", format_date(row["started_at"]), format_time(row["started_at"]), format_date(row["finished_at"]), format_time(row["finished_at"]), format_seconds(row["material_pause_seconds"]), format_seconds(row["manual_pause_seconds"]), format_work_duration(row["started_at"], row["finished_at"], row["pause_intervals"]), row["reinspection_reason"], None, packing_status_label(row["packing_status"]), row["packing_worker_name_snapshot"] or "", format_date(row["packing_started_at"]), format_time(row["packing_started_at"]), format_date(row["packing_finished_at"]), format_time(row["packing_finished_at"])]])
+        detail.append([excel_value(column["value"](row)) for column in columns])
     axis_sheet = workbook.create_sheet("軸別統計")
     axis_sheet.append(["軸別", "訂單數", "已完成", "校機中", "缺料暫停", "待校機", "已取消"])
     for cell in axis_sheet[1]:

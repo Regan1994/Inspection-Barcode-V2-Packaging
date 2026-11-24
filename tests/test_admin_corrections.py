@@ -110,7 +110,6 @@ def test_admin_can_correct_order_details_and_audit_before_after_values(client, a
             "machine_serial": "S27-02",
             "customer_name": "新客戶",
             "expected_ship_date": "2026-11-30",
-            "reinspection_reason": "更換機台後複驗",
             "reason": "原機台故障，改用備用機台",
             "operator_name": "主管甲",
             "password": "TJR",
@@ -125,7 +124,6 @@ def test_admin_can_correct_order_details_and_audit_before_after_values(client, a
         assert order["machine_serial"] == "S27-02"
         assert order["customer_name"] == "新客戶"
         assert order["expected_ship_date"] == "2026-11-30"
-        assert order["reinspection_reason"] == "更換機台後複驗"
         assert order["axis_type_snapshot"] == "5"
         audit = get_db().execute(
             "SELECT * FROM inspection_audit_log WHERE action='admin_correct_order_details' AND entity_id=?",

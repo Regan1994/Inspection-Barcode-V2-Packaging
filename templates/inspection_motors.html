@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>馬達管理</h1>
+<div class="grid">
+  <section class="panel">
+    <h2>新增馬達</h2>
+    <p class="muted">新增後可在建立或修改訂單時選擇；同一型號不能重複建立。</p>
+    <form method="post">
+      <div class="grid two"><label>馬達品牌<input name="brand" maxlength="80" required></label><label>馬達型號<input name="spec" maxlength="120" required></label></div>
+      <button class="button primary">新增</button>
+    </form>
+  </section>
+  <section class="panel table-wrap">
+    <h2>馬達清單</h2>
+    <p class="muted">停用後不會出現在新訂單的選單中；刪除不會影響既有訂單已保存的馬達資料。</p>
+    <table class="inspection-motor-table"><tr><th>品牌</th><th>型號</th><th>狀態</th><th>操作</th></tr>
+      {% for motor in motors %}
+      <tr>
+        <td><form id="motor-update-{{ motor.id }}" method="post" action="{{ url_for('main.inspection_motor_update', motor_id=motor.id) }}"></form><input form="motor-update-{{ motor.id }}" name="brand" value="{{ motor.brand }}" maxlength="80" required></td>
+        <td><input form="motor-update-{{ motor.id }}" name="spec" value="{{ motor.spec }}" maxlength="120" required></td>
+        <td>{{ '啟用' if motor.is_active else '停用' }}</td>
+        <td><div class="model-actions"><select form="motor-update-{{ motor.id }}" name="is_active"><option value="1" {% if motor.is_active %}selected{% endif %}>啟用</option><option value="0" {% if not motor.is_active %}selected{% endif %}>停用</option></select><button form="motor-update-{{ motor.id }}" class="button small">保存</button><form method="post" action="{{ url_for('main.inspection_motor_delete', motor_id=motor.id) }}" class="inline" onsubmit="return confirm('確定刪除此馬達？系統會先備份資料庫；既有訂單資料不會受影響。');"><input type="hidden" name="expected_spec" value="{{ motor.spec }}"><button class="button small danger">刪除</button></form></div></td>
+      </tr>
+      {% else %}<tr><td colspan="4">尚未建立馬達</td></tr>{% endfor %}
+    </table>
+  </section>
+</div>
+{% endblock %}

@@ -77,6 +77,51 @@ def test_verify_backup_command_reports_success(monkeypatch, capsys):
     assert "backup verification passed" in capsys.readouterr().out
 
 
+def test_auto_backup_scheduler_runs_until_stopped(monkeypatch):
+    calls = []
+
+    class StopAfterOneCheck:
+        def __init__(self):
+            self.wait_calls = []
+
+        def wait(self, seconds):
+            self.wait_calls.append(seconds)
+            return len(self.wait_calls) > 1
+
+    stopper = StopAfterOneCheck()
+    monkeypatch.setattr(launcher, "run_scheduled_auto_backup", lambda application: calls.append(application))
+
+    application = object()
+    launcher.auto_backup_scheduler_worker(application, stopper, 60)
+
+    assert calls == [application]
+    assert stopper.wait_calls == [60, 60]
+
+
+def test_manual_backup_always_creates_a_separate_backup(monkeypatch):
+    captured = []
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    class Application:
+        config = {"DATABASE": "C:/data/inspection.db", "BACKUP_DIRECTORY": "C:/data/backups"}
+
+        def app_context(self):
+            return Context()
+
+    monkeypatch.setattr(launcher, "create_sqlite_backup", lambda source, target: captured.append((source, target)) or target)
+
+    backup_path = launcher.run_manual_backup(Application())
+
+    assert captured[0][0] == "C:/data/inspection.db"
+    assert backup_path.name.startswith("inspection_manual_")
+
+
 def test_primary_instance_releases_mutex_after_server_stops(monkeypatch):
     lock = FakeSingleInstance(True)
     run_arguments = {}
